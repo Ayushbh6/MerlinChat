@@ -1,2 +1,0 @@
-DEFAULT_MODEL = "qwen/qwen3.5-plus-02-15"
-MAX_CONTEXT_TOKENS = 60000

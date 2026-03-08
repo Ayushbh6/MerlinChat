@@ -5,6 +5,40 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>frontend</title>
+    <style>
+      :root {
+        background: #1a1a1a;
+        color: #ededed;
+        color-scheme: dark;
+      }
+
+      :root[data-theme='light'] {
+        background: #ebe8e1;
+        color: #22211d;
+        color-scheme: light;
+      }
+
+      html,
+      body,
+      #root {
+        min-height: 100%;
+      }
+
+      body {
+        margin: 0;
+        background: inherit;
+        color: inherit;
+      }
+    </style>
+    <script>
+      (function () {
+        var theme = localStorage.getItem('calendar-theme');
+        document.documentElement.setAttribute(
+          'data-theme',
+          theme === 'light' ? 'light' : 'dark'
+        );
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

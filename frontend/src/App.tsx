@@ -1,9 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Menu, X, Plus, Lightbulb, ChevronDown, ChevronRight, Trash2, Edit2, Check, Cpu } from 'lucide-react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { Send, Menu, X, Plus, Lightbulb, ChevronDown, ChevronRight, Trash2, Edit2, Check, Cpu, Moon, Sun } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import './App.css';
 
 const API_BASE = 'http://localhost:8000/api';
+const THEME_STORAGE_KEY = 'calendar-theme';
+const FALLBACK_MAX_CONTEXT_TOKENS = 168000;
 
 interface Message {
   _id?: string;
@@ -23,6 +25,10 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [input, setInput] = useState('');
   const [thinkingMode, setThinkingMode] = useState(true);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    return savedTheme === 'light' ? 'light' : 'dark';
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
@@ -30,6 +36,7 @@ function App() {
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [currentTokenCount, setCurrentTokenCount] = useState<number>(0);
+  const [maxContextTokens, setMaxContextTokens] = useState<number>(FALLBACK_MAX_CONTEXT_TOKENS);
   
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -51,6 +58,17 @@ function App() {
 
   // Load conversations on mount
   useEffect(() => {
+    fetch(`${API_BASE}/config`)
+      .then(res => res.json())
+      .then(data => {
+        if (typeof data?.max_context_tokens === 'number') {
+          setMaxContextTokens(data.max_context_tokens);
+        }
+      })
+      .catch(err => console.error("Failed to load app config:", err));
+  }, []);
+
+  useEffect(() => {
     fetch(`${API_BASE}/conversations`)
       .then(res => res.json())
       .then(data => {
@@ -58,6 +76,11 @@ function App() {
       })
       .catch(err => console.error("Failed to load conversations:", err));
   }, []);
+
+  useLayoutEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   const loadConversation = async (id: string) => {
     setActiveConvId(id);
@@ -278,17 +301,30 @@ function App() {
       {/* Main Content */}
       <div className="main-content">
         <div className="header">
-          {!sidebarOpen && (
-            <button className="open-sidebar-btn" onClick={() => setSidebarOpen(true)}>
-              <Menu size={24} />
+          <div className="header-left">
+            {!sidebarOpen && (
+              <button className="open-sidebar-btn" onClick={() => setSidebarOpen(true)}>
+                <Menu size={24} />
+              </button>
+            )}
+          </div>
+          <div className="header-right">
+            {isChatStarted && currentTokenCount > 0 && (
+              <div className="token-counter" title="Tokens used in context">
+                <Cpu size={14} />
+                <span>{currentTokenCount.toLocaleString()} / {maxContextTokens.toLocaleString()}</span>
+              </div>
+            )}
+            <button
+              className="theme-toggle-btn"
+              onClick={() => setTheme(prev => prev === 'dark' ? 'light' : 'dark')}
+              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+              <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
             </button>
-          )}
-          {isChatStarted && currentTokenCount > 0 && (
-            <div className="token-counter" title="Tokens used in context">
-              <Cpu size={14} />
-              <span>{currentTokenCount.toLocaleString()} / 60,000</span>
-            </div>
-          )}
+          </div>
         </div>
 
         <div className="chat-area" ref={chatAreaRef}>

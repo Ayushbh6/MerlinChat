@@ -188,6 +188,13 @@
   width: 100%;
 }
 
+.header-left,
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
 .open-sidebar-btn {
   background: transparent;
   border: none;
@@ -204,6 +211,30 @@
 .open-sidebar-btn:hover {
   color: var(--text-color);
   background-color: var(--border-color);
+}
+
+.theme-toggle-btn {
+  background-color: var(--input-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.42rem 0.78rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: inherit;
+  letter-spacing: -0.01em;
+  box-shadow: var(--input-shadow);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.theme-toggle-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--input-hover-shadow);
+  border-color: var(--text-muted);
 }
 
 .token-counter {
@@ -494,14 +525,14 @@
   0%, 100% {
     transform: scale(1);
     box-shadow:
-      0 0 3px 1px rgba(180, 180, 180, 0.20),
-      0 0 7px 2px rgba(180, 180, 180, 0.10);
+      0 0 3px 1px var(--orb-shadow-soft),
+      0 0 7px 2px var(--orb-shadow-soft-wide);
   }
   50% {
     transform: scale(1.25);
     box-shadow:
-      0 0 5px 2px rgba(180, 180, 180, 0.30),
-      0 0 11px 4px rgba(180, 180, 180, 0.14);
+      0 0 5px 2px var(--orb-shadow-strong),
+      0 0 11px 4px var(--orb-shadow-strong-wide);
   }
 }
 
@@ -516,19 +547,16 @@
   margin: 2px 0;
 }
 
-@media (prefers-color-scheme: dark) {
-  @keyframes orb-breathe {
-    0%, 100% {
-      transform: scale(1);
-      box-shadow:
-        0 0 3px 1px rgba(220, 220, 220, 0.22),
-        0 0 7px 3px rgba(220, 220, 220, 0.10);
-    }
-    50% {
-      transform: scale(1.25);
-      box-shadow:
-        0 0 5px 2px rgba(220, 220, 220, 0.32),
-        0 0 11px 4px rgba(220, 220, 220, 0.14);
-    }
+@media (max-width: 768px) {
+  .header {
+    padding: 0.85rem;
+  }
+
+  .header-right {
+    gap: 0.5rem;
+  }
+
+  .theme-toggle-btn span {
+    display: none;
   }
 }
