@@ -170,3 +170,75 @@ async def store_workspace_file(
     )
 
     return file_doc
+
+
+async def create_workspace_text_file(
+    workspace: dict[str, Any],
+    *,
+    title: str,
+    body: str,
+) -> dict[str, Any]:
+    normalized_title = title.strip()
+    if not normalized_title:
+        raise HTTPException(status_code=400, detail="title is required")
+
+    workspace_id = str(workspace["_id"])
+    await workspace_storage.ensure_workspace(workspace_id)
+
+    file_id = ObjectId()
+    safe_name = sanitize_filename(normalized_title)
+    if "." not in safe_name:
+        safe_name = f"{safe_name}.md"
+    stored_filename = f"{file_id}_{safe_name}"
+    content = body.strip()
+    storage_result = await workspace_storage.save_bytes(
+        workspace_id,
+        stored_filename,
+        content.encode("utf-8"),
+        content_type="text/markdown; charset=utf-8",
+    )
+
+    file_doc = {
+        "_id": file_id,
+        "workspace_id": workspace_id,
+        "filename": safe_name,
+        "stored_filename": stored_filename,
+        "content_type": "text/markdown",
+        "size_bytes": storage_result["size_bytes"],
+        "storage_backend": storage_result["storage_backend"],
+        "storage_path": storage_result["storage_path"],
+        "storage_object_id": storage_result["storage_object_id"],
+        "status": "ready",
+        "created_at": utc_now(),
+    }
+    await workspace_files_collection.insert_one(file_doc)
+
+    updated_at = utc_now()
+    workspace["updated_at"] = updated_at
+    await workspaces_collection.update_one(
+        {"_id": workspace["_id"]}, {"$set": {"updated_at": updated_at}}
+    )
+
+    return file_doc
+
+async def delete_workspace_file(workspace: dict[str, Any], file_id: str) -> None:
+    workspace_id = str(workspace["_id"])
+    fid = parse_object_id(file_id, "file")
+    
+    file_doc = await workspace_files_collection.find_one({
+        "_id": fid,
+        "workspace_id": workspace_id
+    })
+    
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="file not found")
+        
+    await workspace_storage.delete_file(file_doc)
+    await workspace_files_collection.delete_one({"_id": fid})
+    
+    updated_at = utc_now()
+    workspace["updated_at"] = updated_at
+    await workspaces_collection.update_one(
+        {"_id": workspace["_id"]}, {"$set": {"updated_at": updated_at}}
+    )
+    await write_workspace_manifest(workspace)

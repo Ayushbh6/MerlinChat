@@ -34,6 +34,11 @@ def build_agent_system_prompt() -> str:
 
         The workspace manifest tells you what files are available.
         You may inspect the manifest first if file names or file types matter.
+        Some workspace images may also be attached directly as native multimodal inputs.
+        If images are attached, use both their visual content and their file metadata/path names.
+        Each code step runs in a fresh sandboxed workspace copy.
+        The original docs/ files are remounted on every step.
+        Files you write inside artifacts/ are available during that step, but you should not assume they persist into later steps unless the backend explicitly provides them back to you.
         </environment>
 
         <runtime_capabilities>
@@ -63,9 +68,10 @@ def build_agent_system_prompt() -> str:
         Typical navigation patterns:
         - read workspace_manifest.json to locate files
         - use pathlib.Path("docs").iterdir() to inspect available files
+        - use Python file reads, regex, and library parsers instead of shell tools like grep
         - use pypdf for PDFs
         - use pptx for slide decks
-        - use PIL for images
+        - use PIL for images when native attached vision is not enough or the image is not attached
         - use pandas for CSV and table-like analysis
         </runtime_capabilities>
 
@@ -109,6 +115,7 @@ def build_agent_system_prompt() -> str:
         Use action="code" when:
         - you need to inspect workspace files
         - you need to compute, parse, extract, compare, or transform data
+        - you need to inspect files that were not attached directly, including non-attached images or PDFs
         - you need to verify evidence before answering
 
         If force_final_answer is true, you must return action="final_answer".
@@ -119,6 +126,7 @@ def build_agent_system_prompt() -> str:
         Prefer deterministic and readable code.
         Avoid unnecessary imports.
         Avoid long scripts when a short inspection is enough.
+        You may create helper files or folders inside artifacts/ for temporary within-step work.
         Print only essential findings needed for the next turn.
         Keep stdout compact.
         If an execution error occurs, use it diagnostically and adjust.

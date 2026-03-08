@@ -264,6 +264,8 @@ async def execute_run_code(run_id: str, code: str) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="max steps per run reached")
     created_at = run.get("created_at")
     if isinstance(created_at, datetime):
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
         total_age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
         if total_age_seconds >= MAX_TOTAL_RUN_SECONDS:
             raise HTTPException(status_code=400, detail="max total run time reached")

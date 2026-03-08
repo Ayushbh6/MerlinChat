@@ -47,6 +47,22 @@ class WorkspaceStorageBackend:
     ) -> None:
         raise NotImplementedError
 
+    async def read_file_bytes(self, file_doc: dict[str, Any]) -> bytes:
+        raise NotImplementedError
+
+    async def save_bytes(
+        self,
+        workspace_id: str,
+        stored_filename: str,
+        data: bytes,
+        *,
+        content_type: str,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def delete_file(self, file_doc: dict[str, Any]) -> None:
+        raise NotImplementedError
+
 
 class LocalWorkspaceStorage(WorkspaceStorageBackend):
     provider_name = "local"
@@ -96,6 +112,24 @@ class LocalWorkspaceStorage(WorkspaceStorageBackend):
             "size_bytes": size_bytes,
         }
 
+    async def save_bytes(
+        self,
+        workspace_id: str,
+        stored_filename: str,
+        data: bytes,
+        *,
+        content_type: str,
+    ) -> dict[str, Any]:
+        await self.ensure_workspace(workspace_id)
+        destination = self._docs_dir(workspace_id) / stored_filename
+        destination.write_bytes(data)
+        return {
+            "storage_backend": self.provider_name,
+            "storage_path": f"workspaces/{workspace_id}/docs/{stored_filename}",
+            "storage_object_id": None,
+            "size_bytes": len(data),
+        }
+
     async def write_manifest(self, workspace_id: str, manifest: dict[str, Any]) -> None:
         await self.ensure_workspace(workspace_id)
         self._manifest_path(workspace_id).write_text(
@@ -111,6 +145,18 @@ class LocalWorkspaceStorage(WorkspaceStorageBackend):
         ).resolve()
         shutil.copy2(source_path, destination_path)
 
+    async def read_file_bytes(self, file_doc: dict[str, Any]) -> bytes:
+        source_path = (
+            self._docs_dir(file_doc["workspace_id"]) / file_doc["stored_filename"]
+        ).resolve()
+        return source_path.read_bytes()
+
+    async def delete_file(self, file_doc: dict[str, Any]) -> None:
+        source_path = (
+            self._docs_dir(file_doc["workspace_id"]) / file_doc["stored_filename"]
+        ).resolve()
+        if source_path.exists():
+            source_path.unlink()
 
 class GridFSWorkspaceStorage(WorkspaceStorageBackend):
     provider_name = "gridfs"
@@ -135,6 +181,30 @@ class GridFSWorkspaceStorage(WorkspaceStorageBackend):
             "stored_filename": stored_filename,
             "kind": "workspace_file",
             "content_type": upload.content_type or "application/octet-stream",
+        }
+        blob_id = await gridfs_bucket.upload_from_stream(
+            stored_filename, data, metadata=metadata
+        )
+        return {
+            "storage_backend": self.provider_name,
+            "storage_path": f"gridfs://{self.bucket_name}/{blob_id}",
+            "storage_object_id": str(blob_id),
+            "size_bytes": len(data),
+        }
+
+    async def save_bytes(
+        self,
+        workspace_id: str,
+        stored_filename: str,
+        data: bytes,
+        *,
+        content_type: str,
+    ) -> dict[str, Any]:
+        metadata = {
+            "workspace_id": workspace_id,
+            "stored_filename": stored_filename,
+            "kind": "workspace_file",
+            "content_type": content_type,
         }
         blob_id = await gridfs_bucket.upload_from_stream(
             stored_filename, data, metadata=metadata
@@ -175,6 +245,24 @@ class GridFSWorkspaceStorage(WorkspaceStorageBackend):
         download_stream = await gridfs_bucket.open_download_stream(blob_id)
         data = await download_stream.read()
         destination_path.write_bytes(data)
+
+    async def read_file_bytes(self, file_doc: dict[str, Any]) -> bytes:
+        storage_object_id = file_doc.get("storage_object_id")
+        if not storage_object_id:
+            raise ValueError("gridfs file is missing storage_object_id")
+        blob_id = ObjectId(storage_object_id)
+        download_stream = await gridfs_bucket.open_download_stream(blob_id)
+        return await download_stream.read()
+
+    async def delete_file(self, file_doc: dict[str, Any]) -> None:
+        storage_object_id = file_doc.get("storage_object_id")
+        if not storage_object_id:
+            return
+        blob_id = ObjectId(storage_object_id)
+        try:
+            await gridfs_bucket.delete(blob_id)
+        except Exception:
+            pass
 
 
 def get_workspace_storage_backend() -> WorkspaceStorageBackend:

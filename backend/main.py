@@ -23,6 +23,7 @@ from backend.schemas.models import (
     RunStepCreateRequest,
     RunUpdateRequest,
     WorkspaceCreateRequest,
+    WorkspaceTextFileCreateRequest,
 )
 from backend.runtime.sandbox_runner import execute_run_code
 from backend.services.agent_service import run_agent_loop
@@ -44,7 +45,9 @@ from backend.services.run_service import (
     update_run,
 )
 from backend.services.workspace_service import (
+    create_workspace_text_file,
     create_workspace,
+    delete_workspace_file,
     get_workspace_or_404,
     list_workspace_files_docs,
     serialize_workspace,
@@ -125,6 +128,31 @@ async def upload_workspace_files(workspace_id: str, files: list[UploadFile] = Fi
 
     await write_workspace_manifest(workspace)
     return {"files": [serialize_workspace_file(file_doc) for file_doc in stored_files]}
+
+
+@app.post("/api/workspaces/{workspace_id}/text-files")
+async def create_workspace_text_file_endpoint(
+    workspace_id: str,
+    req: WorkspaceTextFileCreateRequest,
+):
+    workspace = await get_workspace_or_404(workspace_id)
+    if not req.title.strip():
+        raise HTTPException(status_code=400, detail="title is required")
+
+    file_doc = await create_workspace_text_file(
+        workspace,
+        title=req.title,
+        body=req.body,
+    )
+    await write_workspace_manifest(workspace)
+    return serialize_workspace_file(file_doc)
+
+
+@app.delete("/api/workspaces/{workspace_id}/files/{file_id}")
+async def delete_workspace_file_endpoint(workspace_id: str, file_id: str):
+    workspace = await get_workspace_or_404(workspace_id)
+    await delete_workspace_file(workspace, file_id)
+    return {"status": "deleted"}
 
 
 @app.get("/api/workspaces/{workspace_id}/manifest")

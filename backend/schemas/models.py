@@ -57,6 +57,11 @@ class WorkspaceFileListResponse(BaseModel):
     files: list[WorkspaceFileResponse]
 
 
+class WorkspaceTextFileCreateRequest(BaseModel):
+    title: str
+    body: str
+
+
 class ConversationCreateRequest(BaseModel):
     title: Optional[str] = None
     workspace_id: Optional[str] = None
