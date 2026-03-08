@@ -19,6 +19,12 @@ class MessageModel(BaseModel):
     conversation_id: str
     role: str
     content: str
+    workspace_id: Optional[str] = None
+    turn_id: Optional[str] = None
+    run_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    message_kind: Optional[str] = None
+    trace_summary: Optional[dict[str, Any]] = None
     thinking: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -78,10 +84,19 @@ class RunResponse(BaseModel):
     id: str
     workspace_id: str
     conversation_id: str
+    turn_id: Optional[str] = None
+    trace_id: Optional[str] = None
     user_prompt: str
     model: str
     status: str
     step_count: int
+    worker_task_id: Optional[str] = None
+    attempt_count: int = 0
+    queued_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
+    lease_expires_at: Optional[datetime] = None
     final_answer: Optional[str] = None
     failure_reason: Optional[str] = None
     created_at: datetime
@@ -91,8 +106,13 @@ class RunResponse(BaseModel):
 class RunStepResponse(BaseModel):
     id: str
     run_id: str
+    turn_id: Optional[str] = None
+    trace_id: Optional[str] = None
     step_index: int
     thought: Optional[str] = None
+    step_type: str = "code"
+    blocked_reason: Optional[str] = None
+    model_decision_id: Optional[str] = None
     code: str
     stdout: str
     stderr: str

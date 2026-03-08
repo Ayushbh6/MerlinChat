@@ -1,16 +1,25 @@
+import asyncio
 import json
+import logging
+import os
 from datetime import datetime, timezone
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from bson import ObjectId
 
+from backend.core.celery_app import celery_app
 from backend.core.constants import DEFAULT_MODEL, MAX_CONTEXT_TOKENS
 from backend.core.llm_client import client
+from backend.core.redis_client import redis_async_client
 from backend.db.database import (
+    agent_debug_payloads_collection,
+    agent_trace_events_collection,
+    agent_traces_collection,
     conversations_collection,
+    conversation_turns_collection,
     messages_collection,
     run_steps_collection,
     runs_collection,
@@ -27,6 +36,7 @@ from backend.schemas.models import (
 )
 from backend.runtime.sandbox_runner import execute_run_code
 from backend.services.agent_service import run_agent_loop
+from backend.services.queue_service import enqueue_workspace_run, get_task_result
 from backend.services.run_service import (
     create_conversation,
     create_or_get_workspace_conversation,
@@ -38,12 +48,31 @@ from backend.services.run_service import (
     list_workspace_conversations,
     list_workspace_runs,
     serialize_conversation,
+    serialize_message,
     serialize_run,
     serialize_run_step,
     store_message,
     touch_conversation,
     update_run,
 )
+from backend.services.run_event_service import (
+    append_run_event,
+    list_run_events,
+    serialize_run_event,
+)
+from backend.services.trace_service import (
+    build_trace_summary,
+    create_trace,
+    fetch_turn_hydration,
+    get_trace_for_run,
+    get_trace_or_404,
+    list_trace_debug_payloads,
+    list_trace_events,
+    serialize_debug_payload,
+    serialize_trace,
+    serialize_trace_event,
+)
+from backend.services.turn_service import create_turn, list_conversation_turns, serialize_turn, update_turn
 from backend.services.workspace_service import (
     create_workspace_text_file,
     create_workspace,
@@ -58,6 +87,8 @@ from backend.services.workspace_service import (
 from backend.utils.token_utils import count_tokens, get_encoding, trim_to_limit
 
 app = FastAPI(title="AI Chatbot Backend")
+logger = logging.getLogger(__name__)
+TRACE_DEBUG_TOKEN = os.environ.get("TRACE_DEBUG_TOKEN", "").strip()
 
 # Allow frontend to communicate with backend
 app.add_middleware(
@@ -74,6 +105,24 @@ class ChatRequest(BaseModel):
     message: str
     model: str = DEFAULT_MODEL
     thinking: bool = True
+
+
+@app.on_event("startup")
+async def ensure_indexes():
+    await conversation_turns_collection.create_index(
+        [("conversation_id", 1), ("started_at", 1)]
+    )
+    await messages_collection.create_index([("conversation_id", 1), ("created_at", 1)])
+    await runs_collection.create_index([("conversation_id", 1), ("created_at", -1)])
+    await runs_collection.create_index([("turn_id", 1)], unique=False)
+    await agent_traces_collection.create_index([("turn_id", 1)], unique=True)
+    await agent_traces_collection.create_index([("run_id", 1)], unique=True)
+    await agent_trace_events_collection.create_index(
+        [("trace_id", 1), ("seq", 1)], unique=True
+    )
+    await agent_debug_payloads_collection.create_index(
+        [("trace_id", 1), ("created_at", 1)]
+    )
 
 
 @app.get("/api/config")
@@ -178,8 +227,16 @@ async def create_workspace_run(workspace_id: str, req: RunCreateRequest):
         workspace_id, req.conversation_id, req.user_message
     )
     conversation_id = str(conversation["_id"])
-
-    await store_message(conversation_id, "user", req.user_message)
+    turn = await create_turn(conversation_id, workspace_id, model=req.model, status="queued")
+    user_message = await store_message(
+        conversation_id,
+        "user",
+        req.user_message,
+        workspace_id=workspace_id,
+        turn_id=str(turn["_id"]),
+        message_kind="user",
+    )
+    await update_turn(str(turn["_id"]), user_message_id=str(user_message["_id"]))
     await touch_conversation(
         conversation_id,
         title=conversation.get("title") or req.user_message[:30],
@@ -189,11 +246,36 @@ async def create_workspace_run(workspace_id: str, req: RunCreateRequest):
         workspace_id,
         conversation_id,
         req.user_message,
+        turn_id=str(turn["_id"]),
         model=req.model,
         status="queued",
     )
+    trace = await create_trace(
+        turn_id=str(turn["_id"]),
+        conversation_id=conversation_id,
+        workspace_id=workspace_id,
+        run_id=str(run["_id"]),
+    )
+    run = await update_run(str(run["_id"]), trace_id=str(trace["_id"]))
+    await update_turn(
+        str(turn["_id"]),
+        run_id=str(run["_id"]),
+        trace_id=str(trace["_id"]),
+        status="queued",
+    )
+    await append_run_event(
+        str(run["_id"]),
+        "run.queued",
+        {
+            "turn_id": str(turn["_id"]),
+            "trace_id": str(trace["_id"]),
+            "status": "queued",
+        },
+    )
     return {
         "run_id": str(run["_id"]),
+        "turn_id": str(turn["_id"]),
+        "trace_id": str(trace["_id"]),
         "status": run["status"],
         "conversation_id": conversation_id,
         "stream_url": f"/api/runs/{run['_id']}/events" if req.stream else None,
@@ -219,8 +301,18 @@ async def delete_conversation(conversation_id: str):
     await messages_collection.delete_many({"conversation_id": conversation_id})
     runs = await runs_collection.find({"conversation_id": conversation_id}).to_list(length=500)
     run_ids = [str(run["_id"]) for run in runs]
+    trace_ids = []
+    turn_ids = []
     if run_ids:
         await run_steps_collection.delete_many({"run_id": {"$in": run_ids}})
+        turn_ids = [run.get("turn_id") for run in runs if run.get("turn_id")]
+        trace_ids = [run.get("trace_id") for run in runs if run.get("trace_id")]
+    if trace_ids:
+        await agent_trace_events_collection.delete_many({"trace_id": {"$in": trace_ids}})
+        await agent_debug_payloads_collection.delete_many({"trace_id": {"$in": trace_ids}})
+        await agent_traces_collection.delete_many({"_id": {"$in": [ObjectId(trace_id) for trace_id in trace_ids]}})
+    if turn_ids:
+        await conversation_turns_collection.delete_many({"_id": {"$in": [ObjectId(turn_id) for turn_id in turn_ids]}})
     await runs_collection.delete_many({"conversation_id": conversation_id})
     await conversations_collection.delete_one({"_id": ObjectId(conversation_id)})
     return {"status": "ok"}
@@ -243,9 +335,7 @@ async def get_messages(conversation_id: str):
         "created_at", 1
     )
     msgs = await cursor.to_list(length=1000)
-    for m in msgs:
-        m["_id"] = str(m["_id"])
-    return msgs
+    return [serialize_message(message) for message in msgs]
 
 
 @app.get("/api/conversations/{conversation_id}")
@@ -262,10 +352,63 @@ async def get_conversation_runs(conversation_id: str):
     return {"runs": [serialize_run(run) for run in runs]}
 
 
+@app.get("/api/conversations/{conversation_id}/turns")
+async def get_conversation_turns(conversation_id: str):
+    await get_conversation_or_404(conversation_id)
+    turns = await list_conversation_turns(conversation_id)
+    hydration = await fetch_turn_hydration(turns)
+    payload = []
+    for turn in turns:
+        serialized = serialize_turn(turn)
+        user_message = hydration["messages"].get(turn.get("user_message_id"))
+        assistant_message = hydration["messages"].get(turn.get("assistant_message_id"))
+        run = hydration["runs"].get(turn.get("run_id"))
+        trace = hydration["traces"].get(turn.get("trace_id"))
+        payload.append(
+            {
+                **serialized,
+                "user_message": serialize_message(user_message) if user_message else None,
+                "assistant_message": serialize_message(assistant_message) if assistant_message else None,
+                "run": serialize_run(run) if run else None,
+                "trace": serialize_trace(trace) if trace else None,
+            }
+        )
+    return {"turns": payload}
+
+
 @app.get("/api/runs/{run_id}")
 async def get_run(run_id: str):
     run = await get_run_or_404(run_id)
     return serialize_run(run)
+
+
+@app.get("/api/traces/{trace_id}")
+async def get_trace(trace_id: str):
+    trace = await get_trace_or_404(trace_id)
+    run = await get_run_or_404(trace["run_id"])
+    steps = await list_run_steps(trace["run_id"])
+    return {
+        "trace": serialize_trace(trace),
+        "summary": await build_trace_summary(trace_id),
+        "run": serialize_run(run),
+        "steps": [serialize_run_step(step) for step in steps],
+    }
+
+
+@app.get("/api/traces/{trace_id}/events")
+async def get_trace_events(trace_id: str, after_seq: int = 0, limit: int = 500):
+    await get_trace_or_404(trace_id)
+    events = await list_trace_events(trace_id, after_seq=after_seq, limit=min(limit, 1000))
+    return {"events": [serialize_trace_event(event) for event in events]}
+
+
+@app.get("/api/traces/{trace_id}/debug")
+async def get_trace_debug(trace_id: str, request: Request):
+    if TRACE_DEBUG_TOKEN and request.headers.get("x-trace-debug-token") != TRACE_DEBUG_TOKEN:
+        raise HTTPException(status_code=403, detail="trace debug access denied")
+    await get_trace_or_404(trace_id)
+    payloads = await list_trace_debug_payloads(trace_id)
+    return {"payloads": [serialize_debug_payload(item) for item in payloads]}
 
 
 @app.get("/api/runs/{run_id}/steps")
@@ -276,10 +419,122 @@ async def get_run_steps(run_id: str):
 
 
 @app.get("/api/runs/{run_id}/events")
-async def get_run_events(run_id: str):
+async def get_run_events(run_id: str, request: Request):
     await get_run_or_404(run_id)
-    raise HTTPException(
-        status_code=501, detail="run event streaming is not implemented yet"
+    last_event_id = request.headers.get("last-event-id")
+    try:
+        after_seq = int(last_event_id or "0")
+    except ValueError:
+        after_seq = 0
+
+    def normalize_stream_event(event: dict) -> dict:
+        if "type" in event:
+            return event
+
+        event_type = event.get("event_type")
+        if not event_type:
+            return event
+
+        ui_payload = event.get("ui_payload")
+        payload = event.get("payload")
+        if not isinstance(ui_payload, dict):
+            ui_payload = payload if isinstance(payload, dict) else {}
+
+        return {
+            "id": str(event.get("id", "")),
+            "run_id": event.get("run_id", run_id),
+            "trace_id": event.get("trace_id"),
+            "turn_id": event.get("turn_id"),
+            "seq": int(event.get("seq", 0)),
+            "type": event_type,
+            "scope": event.get("scope", "run"),
+            "payload": ui_payload,
+            "ui_payload": ui_payload,
+            "created_at": event.get("created_at"),
+        }
+
+    async def event_stream():
+        current_seq = after_seq
+        channel = f"run:{run_id}"
+        pubsub = redis_async_client.pubsub()
+        await pubsub.subscribe(channel)
+        heartbeat_interval = 15
+        last_yield_time = asyncio.get_event_loop().time()
+        logger.info("SSE stream opened run_id=%s after_seq=%s", run_id, after_seq)
+        try:
+            while True:
+                # ---- 1. drain MongoDB backlog first ----
+                try:
+                    backlog = await list_run_events(run_id, after_seq=current_seq)
+                except Exception:
+                    backlog = []
+
+                if backlog:
+                    for event_doc in backlog:
+                        serialized = serialize_run_event(event_doc)
+                        current_seq = int(serialized["seq"])
+                        payload = json.dumps(serialized)
+                        yield f"id: {current_seq}\ndata: {payload}\n\n"
+                        last_yield_time = asyncio.get_event_loop().time()
+                    if backlog[-1]["event_type"] in {"turn.completed", "turn.failed"}:
+                        break
+                    continue
+
+                # ---- 2. wait for a Redis pub/sub push ----
+                try:
+                    message = await pubsub.get_message(
+                        ignore_subscribe_messages=True,
+                        timeout=0.1,
+                    )
+                except Exception:
+                    message = None
+                    await asyncio.sleep(0.05)
+
+                if message and message.get("data"):
+                    try:
+                        event = normalize_stream_event(json.loads(message["data"]))
+                    except Exception:
+                        continue
+                    event_seq = int(event.get("seq", 0))
+                    if event_seq > current_seq:
+                        current_seq = event_seq
+                        yield f"id: {current_seq}\ndata: {json.dumps(event)}\n\n"
+                        last_yield_time = asyncio.get_event_loop().time()
+                        if event.get("type") in {"turn.completed", "turn.failed"}:
+                            break
+                        continue
+
+                # ---- 3. keepalive heartbeat ----
+                now = asyncio.get_event_loop().time()
+                if now - last_yield_time >= heartbeat_interval:
+                    yield ": heartbeat\n\n"
+                    last_yield_time = now
+
+                # ---- 4. terminal-status fallback ----
+                try:
+                    current_run = await get_run_or_404(run_id)
+                except Exception:
+                    break
+                if current_run["status"] in {"completed", "failed", "cancelled"}:
+                    final_backlog = await list_run_events(run_id, after_seq=current_seq)
+                    for event_doc in final_backlog:
+                        serialized = serialize_run_event(event_doc)
+                        current_seq = int(serialized["seq"])
+                        yield f"id: {current_seq}\ndata: {json.dumps(serialized)}\n\n"
+                    break
+        finally:
+            logger.info("SSE stream closed run_id=%s final_seq=%s", run_id, current_seq)
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -317,11 +572,25 @@ async def execute_run_step_endpoint(run_id: str, req: RunExecuteRequest):
         "step": serialize_run_step(step),
         "sandbox": execution["sandbox"],
     }
-
-
-@app.post("/api/runs/{run_id}/start")
+@app.post("/api/runs/{run_id}/start", status_code=202)
 async def start_run_endpoint(run_id: str):
-    return await run_agent_loop(run_id)
+    run = await get_run_or_404(run_id)
+    if run["status"] in {"completed", "failed", "cancelled"}:
+        return {"run_id": run_id, "status": run["status"]}
+    if run.get("worker_task_id") and run["status"] in {"queued", "running"}:
+        task = get_task_result(run["worker_task_id"])
+        if task.state not in {"FAILURE", "REVOKED"}:
+            return {"run_id": run_id, "task_id": run["worker_task_id"], "status": run["status"]}
+
+    task = enqueue_workspace_run(run_id)
+    updated_run = await update_run(
+        run_id,
+        status="queued",
+        worker_task_id=task.id,
+        attempt_count=(run.get("attempt_count", 0) or 0) + 1,
+        queued_at=datetime.now(timezone.utc),
+    )
+    return {"run_id": run_id, "task_id": task.id, "status": updated_run["status"]}
 
 
 @app.patch("/api/runs/{run_id}")

@@ -92,7 +92,7 @@ export function WorkspaceHubPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: (
     try {
       const runCreation = await createWorkspaceRun(state.workspace.id, {
         user_message: userMessage,
-        stream: false,
+        stream: true,
       });
       await refresh();
       navigate(`/workspaces/${state.workspace.id}/chats/${runCreation.conversation_id}`, {

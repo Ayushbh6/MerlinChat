@@ -1,6 +1,8 @@
+import asyncio
 import base64
 import json
 import logging
+import os
 import re
 import traceback
 from typing import Any
@@ -27,13 +29,22 @@ from backend.prompts.agent_prompt import (
     build_agent_system_prompt,
     build_agent_turn_prompt,
 )
-from backend.runtime.agent_contract import validate_agent_turn
+from backend.runtime.agent_contract import (
+    BLOCKED_STEP_EXIT_CODE,
+    BLOCKED_STEP_PREFIX,
+    MAX_CONSECUTIVE_BLOCKED_STEPS,
+    count_trailing_blocked_steps,
+    detect_duplicate_or_stagnant_code,
+    validate_agent_turn,
+)
 from backend.runtime.sandbox_runner import execute_run_code
 from backend.runtime.workspace_storage import workspace_storage
 from backend.schemas.models import AgentTurn
+from backend.services.run_event_service import append_run_event
 from backend.services.run_service import (
     create_run_step,
     get_run_or_404,
+    heartbeat_run,
     list_run_steps,
     serialize_run,
     serialize_run_step,
@@ -41,6 +52,8 @@ from backend.services.run_service import (
     touch_conversation,
     update_run,
 )
+from backend.services.trace_service import build_trace_summary
+from backend.services.turn_service import update_turn
 from backend.services.workspace_service import (
     get_workspace_or_404,
     list_workspace_files_docs,
@@ -90,7 +103,7 @@ AGENT_SCHEMA = {
 }
 
 MAX_REPAIR_ATTEMPTS = 1
-MAX_PRIOR_STEPS_IN_PROMPT = 3
+MAX_PRIOR_STEPS_IN_PROMPT = MAX_AGENT_TURNS
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
 
@@ -120,10 +133,86 @@ def _step_feedback(step: dict[str, Any]) -> dict[str, Any]:
     return {
         "step": step["step_index"],
         "exit_code": step["exit_code"],
+        "thought": step.get("thought"),
         "stdout_tail": _truncate_tail(step.get("stdout", ""), MAX_MODEL_FEEDBACK_BYTES),
         "stderr_tail": _truncate_tail(step.get("stderr", ""), MAX_MODEL_FEEDBACK_BYTES),
         "artifacts": _summarize_artifacts(step.get("artifacts", [])),
     }
+
+
+def _chunk_text(value: str, *, chunk_size: int = 160) -> list[str]:
+    text = (value or "").strip()
+    if not text:
+        return []
+
+    chunks: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if len(line) <= chunk_size:
+            chunks.append(line)
+            continue
+        start = 0
+        while start < len(line):
+            chunks.append(line[start : start + chunk_size])
+            start += chunk_size
+    return chunks
+
+
+async def _emit_step_stream(
+    run_id: str,
+    *,
+    step_index: int,
+    thought: str | None,
+    code: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    artifacts: list[dict[str, Any]],
+    duration_ms: int,
+    created_at: str | None = None,
+) -> None:
+    await append_run_event(
+        run_id,
+        "step.started",
+        {
+            "step_index": step_index,
+            "thought": thought,
+            "status": "running",
+        },
+    )
+    for chunk in _chunk_text(code):
+        await append_run_event(
+            run_id,
+            "step.code.delta",
+            {"step_index": step_index, "chunk": chunk},
+        )
+    for chunk in _chunk_text(stdout):
+        await append_run_event(
+            run_id,
+            "step.stdout.delta",
+            {"step_index": step_index, "chunk": chunk},
+        )
+    for chunk in _chunk_text(stderr):
+        await append_run_event(
+            run_id,
+            "step.stderr.delta",
+            {"step_index": step_index, "chunk": chunk},
+        )
+    await append_run_event(
+        run_id,
+        "step.completed",
+        {
+            "step_index": step_index,
+            "thought": thought,
+            "code": code,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": exit_code,
+            "artifacts": _summarize_artifacts(artifacts),
+            "duration_ms": duration_ms,
+            "created_at": created_at,
+            "status": "completed",
+        },
+    )
 
 
 def _build_memory_snapshot() -> dict[str, Any]:
@@ -430,7 +519,7 @@ async def _request_agent_turn(
     raise HTTPException(status_code=502, detail=last_error)
 
 
-async def run_agent_loop(run_id: str) -> dict[str, Any]:
+async def run_agent_loop(run_id: str, worker_task_id: str | None = None) -> dict[str, Any]:
     run = await get_run_or_404(run_id)
     if run["status"] in {"completed", "failed", "cancelled"}:
         raise HTTPException(status_code=400, detail="run is already in a terminal state")
@@ -439,7 +528,13 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
     manifest = await write_workspace_manifest(workspace)
     file_docs = await list_workspace_files_docs(run["workspace_id"])
     model = run.get("model") or DEFAULT_MODEL
-    run = await update_run(run_id, status="running", failure_reason=None)
+    run = await update_run(
+        run_id,
+        status="running",
+        failure_reason=None,
+        worker_task_id=worker_task_id,
+    )
+    await heartbeat_run(run_id)
     conversation_history, conversation_token_count = await _load_conversation_history(
         run["conversation_id"],
         run["user_prompt"],
@@ -449,9 +544,30 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
         run["user_prompt"],
         file_docs,
     )
+    await append_run_event(
+        run_id,
+        "turn.started",
+        {
+            "turn_id": run["turn_id"],
+            "conversation_id": run["conversation_id"],
+            "workspace_id": run["workspace_id"],
+            "user_prompt": run["user_prompt"],
+        },
+    )
+    await append_run_event(
+        run_id,
+        "run.started",
+        {
+            "status": "running",
+            "conversation_id": run["conversation_id"],
+            "workspace_id": run["workspace_id"],
+            "user_prompt": run["user_prompt"],
+        },
+    )
 
     try:
         while True:
+            await heartbeat_run(run_id)
             run = await get_run_or_404(run_id)
             steps = await list_run_steps(run_id)
             code_step_count = len(steps)
@@ -466,18 +582,72 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                 omitted_image_count,
                 force_final_answer=force_final_answer,
             )
+            await append_run_event(
+                run_id,
+                "llm.call.started",
+                {
+                    "step_index": len(steps) + 1,
+                    "model": model,
+                },
+                raw_debug_kind="llm.call.started",
+                raw_debug_payload={"model": model, "payload": payload},
+            )
             agent_turn = await _request_agent_turn(
                 model=model,
                 payload=payload,
                 attached_images=attached_images,
                 code_step_count=code_step_count,
             )
+            await append_run_event(
+                run_id,
+                "llm.call.completed",
+                {
+                    "step_index": len(steps) + 1,
+                    "action": agent_turn.action,
+                },
+                raw_debug_kind="llm.call.completed",
+                raw_debug_payload={"agent_turn": agent_turn.model_dump()},
+            )
+            await append_run_event(
+                run_id,
+                "thought.updated",
+                {
+                    "thought": agent_turn.thought,
+                    "action": agent_turn.action,
+                    "step_index": len(steps) + 1,
+                },
+            )
 
             if agent_turn.action == "final_answer":
-                await store_message(
+                draft_final_answer = (agent_turn.final_answer or "").strip()
+
+                # Use the agent's own structured final_answer directly.
+                # A second LLM call would lose grounding from execution results.
+                final_answer = draft_final_answer
+                if not final_answer:
+                    raise HTTPException(status_code=502, detail="model returned empty final answer")
+
+                # Stream the answer to the frontend in chunks for a
+                # smooth typewriter effect without a lossy rewrite.
+                for chunk in _chunk_text(final_answer, chunk_size=220):
+                    await append_run_event(
+                        run_id,
+                        "answer.delta",
+                        {"chunk": chunk},
+                    )
+                    await asyncio.sleep(0.012)
+
+                trace_summary = await build_trace_summary(run["trace_id"])
+                assistant_message = await store_message(
                     run["conversation_id"],
                     "assistant",
-                    agent_turn.final_answer or "",
+                    final_answer,
+                    workspace_id=run["workspace_id"],
+                    turn_id=run["turn_id"],
+                    run_id=run_id,
+                    trace_id=run["trace_id"],
+                    message_kind="assistant",
+                    trace_summary=trace_summary,
                 )
                 _, final_token_count = await _load_conversation_history(
                     run["conversation_id"],
@@ -487,8 +657,22 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                 updated_run = await update_run(
                     run_id,
                     status="completed",
-                    final_answer=agent_turn.final_answer,
+                    final_answer=final_answer,
                     failure_reason=None,
+                )
+                await update_turn(
+                    run["turn_id"],
+                    assistant_message_id=str(assistant_message["_id"]),
+                    status="completed",
+                    token_counts={"conversation": final_token_count},
+                )
+                await append_run_event(
+                    run_id,
+                    "turn.completed",
+                    {
+                        "status": updated_run["status"],
+                        "final_answer": final_answer,
+                    },
                 )
                 final_steps = await list_run_steps(run_id)
                 return {
@@ -496,8 +680,92 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                     "steps": [serialize_run_step(step) for step in final_steps],
                 }
 
+            blocked_reason = detect_duplicate_or_stagnant_code(agent_turn.code, steps)
+            if blocked_reason:
+                blocked_step = await create_run_step(
+                    run_id,
+                    thought=agent_turn.thought,
+                    step_type="blocked",
+                    blocked_reason=blocked_reason,
+                    code=agent_turn.code,
+                    stdout="",
+                    stderr=blocked_reason,
+                    exit_code=BLOCKED_STEP_EXIT_CODE,
+                    artifacts=[],
+                    next_step_needed=True,
+                    duration_ms=0,
+                )
+                await _emit_step_stream(
+                    run_id,
+                    step_index=blocked_step["step_index"],
+                    thought=agent_turn.thought,
+                    code=agent_turn.code,
+                    stdout="",
+                    stderr=blocked_reason,
+                    exit_code=BLOCKED_STEP_EXIT_CODE,
+                    artifacts=[],
+                    duration_ms=0,
+                    created_at=serialize_run_step(blocked_step)["created_at"],
+                )
+                latest_steps = await list_run_steps(run_id)
+                if count_trailing_blocked_steps(latest_steps) >= MAX_CONSECUTIVE_BLOCKED_STEPS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "agent repeated duplicate or stagnant code steps after being blocked"
+                        ),
+                    )
+                if len(steps) + 1 >= MAX_AGENT_TURNS:
+                    raise HTTPException(status_code=400, detail="max agent turns reached")
+                continue
+
+            # ---- Pre-calculate step index and emit started / code deltas BEFORE execution ----
+            step_index = len(steps) + 1
+            await append_run_event(
+                run_id,
+                "step.started",
+                {
+                    "step_index": step_index,
+                    "thought": agent_turn.thought,
+                    "status": "running",
+                },
+            )
+            # Stream code deltas with a small delay between chunks for a typewriter effect
+            for chunk in _chunk_text(agent_turn.code):
+                await append_run_event(
+                    run_id,
+                    "step.code.delta",
+                    {"step_index": step_index, "chunk": chunk},
+                )
+                await asyncio.sleep(0.018)  # ~18 ms → smooth typewriter render
+
+            # Live stdout / stderr callbacks — emit delta events as the sandbox produces output
+            stdout_acc: list[str] = []
+            stderr_acc: list[str] = []
+
+            async def _on_stdout(chunk: str) -> None:
+                stdout_acc.append(chunk)
+                await append_run_event(
+                    run_id,
+                    "step.stdout.delta",
+                    {"step_index": step_index, "chunk": chunk},
+                )
+
+            async def _on_stderr(chunk: str) -> None:
+                stderr_acc.append(chunk)
+                await append_run_event(
+                    run_id,
+                    "step.stderr.delta",
+                    {"step_index": step_index, "chunk": chunk},
+                )
+
             try:
-                execution = await execute_run_code(run_id, agent_turn.code)
+                execution = await execute_run_code(
+                    run_id,
+                    agent_turn.code,
+                    on_stdout_chunk=_on_stdout,
+                    on_stderr_chunk=_on_stderr,
+                )
             except HTTPException as exc:
                 detail = str(exc.detail)
                 if detail in {"max steps per run reached", "max total run time reached"}:
@@ -505,8 +773,8 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
 
                 execution = {
                     "code": agent_turn.code,
-                    "stdout": "",
-                    "stderr": detail,
+                    "stdout": "".join(stdout_acc),
+                    "stderr": ("".join(stderr_acc) + ("\n" if stderr_acc else "") + detail).strip(),
                     "exit_code": 1,
                     "artifacts": [],
                     "duration_ms": 0,
@@ -519,7 +787,7 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                 )
                 execution = {
                     "code": agent_turn.code,
-                    "stdout": "",
+                    "stdout": "".join(stdout_acc),
                     "stderr": "\n".join(
                         [
                             "Unexpected execution failure.",
@@ -531,9 +799,10 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                     "artifacts": [],
                     "duration_ms": 0,
                 }
-            await create_run_step(
+            created_step = await create_run_step(
                 run_id,
                 thought=agent_turn.thought,
+                step_type="code",
                 code=execution["code"],
                 stdout=execution["stdout"],
                 stderr=execution["stderr"],
@@ -542,6 +811,38 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                 next_step_needed=agent_turn.next_step_needed,
                 duration_ms=execution["duration_ms"],
             )
+            serialized_step = serialize_run_step(created_step)
+            # Emit step.completed — code and output deltas were already streamed live above
+            await append_run_event(
+                run_id,
+                "step.completed",
+                {
+                    "step_index": created_step["step_index"],
+                    "thought": agent_turn.thought,
+                    "code": execution["code"],
+                    "stdout": execution["stdout"],
+                    "stderr": execution["stderr"],
+                    "exit_code": execution["exit_code"],
+                    "artifacts": _summarize_artifacts(execution["artifacts"]),
+                    "duration_ms": execution["duration_ms"],
+                    "created_at": serialized_step["created_at"],
+                    "status": "completed",
+                },
+            )
+            for artifact in execution["artifacts"]:
+                await append_run_event(
+                    run_id,
+                    "artifact.created",
+                    {
+                        "step_index": created_step["step_index"],
+                        "artifact": {
+                            "name": artifact.get("name"),
+                            "path": artifact.get("agent_path") or artifact.get("runtime_path"),
+                            "content_type": artifact.get("content_type"),
+                            "size_bytes": artifact.get("size_bytes"),
+                        },
+                    },
+                )
 
             if len(steps) + 1 >= MAX_AGENT_TURNS:
                 raise HTTPException(status_code=400, detail="max agent turns reached")
@@ -553,6 +854,12 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
             status="failed",
             failure_reason=failure_reason,
         )
+        await append_run_event(
+            run_id,
+            "turn.failed",
+            {"failure_reason": failure_reason},
+        )
+        await update_turn(run["turn_id"], status="failed", failure_reason=failure_reason)
         final_steps = await list_run_steps(run_id)
         return {
             "run": serialize_run(updated_run),
@@ -565,6 +872,12 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
             status="failed",
             failure_reason=failure_reason,
         )
+        await append_run_event(
+            run_id,
+            "turn.failed",
+            {"failure_reason": failure_reason},
+        )
+        await update_turn(run["turn_id"], status="failed", failure_reason=failure_reason)
         final_steps = await list_run_steps(run_id)
         return {
             "run": serialize_run(updated_run),

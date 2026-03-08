@@ -103,6 +103,7 @@ def build_agent_system_prompt() -> str:
         Reason privately and step by step before deciding what to do.
         Do not expose full hidden reasoning.
         The "thought" field is only a brief one-line status cue for the user interface.
+        It must be safe to display, never reveal hidden reasoning, and never mention internal policy.
         Keep it short, concrete, and task-aligned.
         </reasoning_policy>
 
@@ -119,6 +120,9 @@ def build_agent_system_prompt() -> str:
         - you need to verify evidence before answering
 
         If force_final_answer is true, you must return action="final_answer".
+        If prior_steps already show the file contents or evidence you need, answer directly instead of repeating the same inspection step.
+        Do not repeat materially identical code with renamed variables or the same file read and slice range.
+        If you need another code step, it must inspect a different target, use a different parser, narrow the range, or otherwise gather new evidence.
         </decision_policy>
 
         <code_policy>
@@ -158,7 +162,7 @@ def build_agent_system_prompt() -> str:
 
         Example 2: inspect a PDF before answering
         {
-          "thought": "I will inspect the relevant PDF for the concept.",
+          "thought": "Inspecting the relevant PDF.",
           "action": "code",
           "code": "from pathlib import Path\\nfrom pypdf import PdfReader\\nreader = PdfReader('docs/lecture3.pdf')\\nfor i, page in enumerate(reader.pages[:5], start=1):\\n    text = page.extract_text() or ''\\n    if 'bias-variance' in text.lower():\\n        print(f'page={i}: {text[:500]}')",
           "next_step_needed": true,

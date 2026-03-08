@@ -100,7 +100,7 @@ a {
 
 .markdown pre {
   overflow-x: auto;
-  border-radius: 1.5rem;
+  border-radius: 0.75rem;
   border: 1px solid var(--border);
   background: var(--code-bg);
   padding: 1rem;
@@ -110,6 +110,45 @@ a {
 .markdown pre code {
   background: transparent;
   padding: 0;
+}
+
+/* Tables */
+.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9em;
+  margin-bottom: 1rem;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.markdown th,
+.markdown td {
+  padding: 0.55rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown th {
+  font-weight: 600;
+  background: color-mix(in srgb, var(--surface-soft) 70%, transparent);
+  color: var(--text-primary);
+}
+
+.markdown tr:last-child td {
+  border-bottom: none;
+}
+
+.markdown tbody tr:hover {
+  background: color-mix(in srgb, var(--surface-hover) 45%, transparent);
+}
+
+/* Horizontal rule */
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.5rem 0;
 }
 
 .markdown blockquote {

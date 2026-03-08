@@ -78,7 +78,7 @@ export function RoutedApp() {
           sidebarOpen ? 'lg:pl-[calc(var(--sidebar-width)+1.5rem)]' : 'lg:pl-24',
         ].join(' ')}
       >
-        <div className="mx-auto max-w-7xl">
+        <div className="mx-auto w-full">
           <Routes>
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/chat" element={<ChatHomePage onChatsUpdated={refreshGeneralChats} />} />

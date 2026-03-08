@@ -14,3 +14,7 @@ pydantic
 crawl4ai
 tavily-python
 python-multipart
+celery
+redis
+celery
+redis

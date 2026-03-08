@@ -1,8 +1,13 @@
 import type {
+  AgentTrace,
+  AgentTraceEvent,
+  AssistantTraceSummary,
   Conversation,
+  ConversationTurn,
   Message,
   PendingWorkspaceRun,
   Run,
+  RunEvent,
   RunStep,
   StagedWorkspaceNote,
   Workspace,
@@ -123,24 +128,37 @@ export async function getConversationRuns(conversationId: string) {
   return readJson<{ runs: Run[] }>(`${API_BASE}/conversations/${conversationId}/runs`);
 }
 
+export async function getConversationTurns(conversationId: string) {
+  return readJson<{ turns: ConversationTurn[] }>(`${API_BASE}/conversations/${conversationId}/turns`);
+}
+
 export async function getRunSteps(runId: string) {
   return readJson<{ steps: RunStep[] }>(`${API_BASE}/runs/${runId}/steps`);
 }
 
+export async function getTrace(traceId: string) {
+  return readJson<{ trace: AgentTrace; summary: AssistantTraceSummary; run: Run; steps: RunStep[] }>(
+    `${API_BASE}/traces/${traceId}`
+  );
+}
+
+export async function getTraceEvents(traceId: string, afterSeq = 0) {
+  return readJson<{ events: AgentTraceEvent[] }>(`${API_BASE}/traces/${traceId}/events?after_seq=${afterSeq}`);
+}
+
 export async function loadWorkspaceThread(conversationId: string) {
-  const [messages, runsPayload] = await Promise.all([
-    getConversationMessages(conversationId),
-    getConversationRuns(conversationId),
-  ]);
+  const turnsPayload = await getConversationTurns(conversationId);
+  const runs = turnsPayload.turns
+    .map(turn => turn.run)
+    .filter((run): run is Run => Boolean(run));
   const stepEntries = await Promise.all(
-    runsPayload.runs.map(async run => {
+    runs.map(async run => {
       const stepsPayload = await getRunSteps(run.id);
       return [run.id, stepsPayload.steps] as const;
     })
   );
   return {
-    messages,
-    runs: runsPayload.runs,
+    turns: turnsPayload.turns,
     runSteps: Object.fromEntries(stepEntries),
   };
 }
@@ -192,6 +210,8 @@ export async function createWorkspaceRun(
 ) {
   return readJson<{
     run_id: string;
+    turn_id: string;
+    trace_id: string;
     status: string;
     conversation_id: string;
     stream_url?: string | null;
@@ -203,7 +223,9 @@ export async function createWorkspaceRun(
 }
 
 export async function startWorkspaceRun(runId: string) {
-  return readJson(`${API_BASE}/runs/${runId}/start`, { method: 'POST' });
+  return readJson<{ run_id: string; task_id?: string | null; status: string }>(`${API_BASE}/runs/${runId}/start`, {
+    method: 'POST',
+  });
 }
 
 export async function createWorkspaceWithAttachments(payload: {
@@ -251,6 +273,13 @@ type StreamEvent =
   | { type: 'token_count'; count: number }
   | { type: 'error'; content: string };
 
+function readStreamingError(response: Response) {
+  return response
+    .json()
+    .then(body => body?.detail || `Request failed with status ${response.status}`)
+    .catch(() => `Request failed with status ${response.status}`);
+}
+
 export async function streamGeneralChat(payload: {
   conversationId?: string;
   message: string;
@@ -273,14 +302,7 @@ export async function streamGeneralChat(payload: {
   });
 
   if (!response.ok || !response.body) {
-    let detail = `Request failed with status ${response.status}`;
-    try {
-      const body = await response.json();
-      detail = body?.detail || detail;
-    } catch {
-      // ignore non-json responses
-    }
-    throw new Error(detail);
+    throw new Error(await readStreamingError(response));
   }
 
   const reader = response.body.getReader();
@@ -322,9 +344,137 @@ export async function streamGeneralChat(payload: {
   }
 }
 
+export async function streamWorkspaceRunEvents(payload: {
+  runId: string;
+  afterSeq?: number;
+  signal?: AbortSignal;
+  onEvent: (event: RunEvent) => void;
+}) {
+  const TERMINAL_TYPES = new Set(['turn.completed', 'turn.failed']);
+  const MAX_RECONNECTS = 8;
+  const RECONNECT_DELAY_MS = 1500;
+
+  const normalizeRunEvent = (value: unknown): RunEvent | null => {
+    if (!value || typeof value !== 'object') return null;
+    const raw = value as Record<string, unknown>;
+
+    const eventType = typeof raw.type === 'string' ? raw.type : typeof raw.event_type === 'string' ? raw.event_type : null;
+    if (!eventType) return null;
+
+    const payloadValue = raw.ui_payload && typeof raw.ui_payload === 'object'
+      ? (raw.ui_payload as Record<string, unknown>)
+      : raw.payload && typeof raw.payload === 'object'
+        ? (raw.payload as Record<string, unknown>)
+        : {};
+
+    return {
+      id: typeof raw.id === 'string' ? raw.id : '',
+      run_id: typeof raw.run_id === 'string' ? raw.run_id : payload.runId,
+      trace_id: typeof raw.trace_id === 'string' ? raw.trace_id : undefined,
+      turn_id: typeof raw.turn_id === 'string' ? raw.turn_id : undefined,
+      seq: typeof raw.seq === 'number' ? raw.seq : Number(raw.seq || 0),
+      type: eventType as RunEvent['type'],
+      scope: typeof raw.scope === 'string' ? raw.scope : 'run',
+      payload: payloadValue,
+      ui_payload: payloadValue,
+      created_at: typeof raw.created_at === 'string' ? raw.created_at : new Date().toISOString(),
+    };
+  };
+
+  let lastSeq = payload.afterSeq ?? 0;
+  let reachedTerminal = false;
+
+  for (let attempt = 0; attempt <= MAX_RECONNECTS; attempt++) {
+    if (payload.signal?.aborted) return;
+
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY_MS));
+      if (payload.signal?.aborted) return;
+    }
+
+    const headers: HeadersInit = {
+      Accept: 'text/event-stream',
+      'Cache-Control': 'no-cache',
+    };
+    if (lastSeq > 0) {
+      headers['Last-Event-ID'] = String(lastSeq);
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}/runs/${payload.runId}/events`, {
+        method: 'GET',
+        headers,
+        signal: payload.signal,
+      });
+    } catch {
+      if (payload.signal?.aborted) return;
+      continue;
+    }
+
+    if (!response.ok || !response.body) {
+      if (attempt === MAX_RECONNECTS) {
+        throw new Error(await readStreamingError(response));
+      }
+      continue;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary !== -1) {
+          const rawBlock = buffer.slice(0, boundary).trim();
+          buffer = buffer.slice(boundary + 2);
+
+          if (rawBlock && !rawBlock.startsWith(':')) {
+            const dataLine = rawBlock
+              .split('\n')
+              .filter(line => line.startsWith('data:'))
+              .map(line => line.slice(5).trim())
+              .join('');
+
+            if (dataLine) {
+              try {
+                const normalized = normalizeRunEvent(JSON.parse(dataLine));
+                if (normalized) {
+                  lastSeq = Math.max(lastSeq, normalized.seq);
+                  payload.onEvent(normalized);
+                  if (TERMINAL_TYPES.has(normalized.type)) {
+                    reachedTerminal = true;
+                  }
+                }
+              } catch { /* skip malformed frame */ }
+            }
+          }
+
+          boundary = buffer.indexOf('\n\n');
+        }
+
+        if (done) break;
+      }
+    } catch {
+      if (payload.signal?.aborted) return;
+    }
+
+    if (reachedTerminal) return;
+    // Stream ended without a terminal event — reconnect from lastSeq
+  }
+
+  // Exhausted all reconnection attempts without terminal event
+  if (!reachedTerminal) {
+    throw new Error('SSE stream disconnected before run completed');
+  }
+}
+
 export function timelineForWorkspaceThread(thread: {
-  messages: Message[];
-  runs: Run[];
+  turns: ConversationTurn[];
   runSteps: Record<string, RunStep[]>;
 }) {
   const timeline: Array<
@@ -332,23 +482,34 @@ export function timelineForWorkspaceThread(thread: {
     | { kind: 'run'; id: string; createdAt: string; run: Run; steps: RunStep[] }
   > = [];
 
-  thread.messages.forEach((message, index) => {
-    timeline.push({
-      kind: 'message',
-      id: message._id || `message-${index}`,
-      createdAt: message.created_at || new Date(0).toISOString(),
-      message,
-    });
-  });
+  thread.turns.forEach((turn, index) => {
+    if (turn.user_message) {
+      timeline.push({
+        kind: 'message',
+        id: turn.user_message._id || `turn-user-${index}`,
+        createdAt: turn.user_message.created_at || turn.started_at,
+        message: turn.user_message,
+      });
+    }
 
-  thread.runs.forEach(run => {
-    timeline.push({
-      kind: 'run',
-      id: run.id,
-      createdAt: run.created_at,
-      run,
-      steps: thread.runSteps[run.id] || [],
-    });
+    if (turn.run) {
+      timeline.push({
+        kind: 'run',
+        id: turn.run.id,
+        createdAt: turn.run.created_at,
+        run: turn.run,
+        steps: thread.runSteps[turn.run.id] || [],
+      });
+    }
+
+    if (turn.assistant_message) {
+      timeline.push({
+        kind: 'message',
+        id: turn.assistant_message._id || `turn-assistant-${index}`,
+        createdAt: turn.assistant_message.created_at || turn.completed_at || turn.updated_at,
+        message: turn.assistant_message,
+      });
+    }
   });
 
   timeline.sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());

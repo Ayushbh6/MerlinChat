@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -61,3 +61,57 @@ async def create_structured_completion(
         response_format={"type": "json_schema", "json_schema": json_schema},
         extra_body=body,
     )
+
+
+def _extract_stream_delta_text(delta: Any) -> str:
+    content = getattr(delta, "content", None)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    chunks.append(str(item.get("text", "")))
+                continue
+
+            item_type = getattr(item, "type", None)
+            if item_type == "text":
+                chunks.append(str(getattr(item, "text", "")))
+        return "".join(chunks)
+
+    return ""
+
+
+async def stream_text_completion(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    plugins: list[dict[str, Any]] | None = None,
+    extra_body: dict[str, Any] | None = None,
+) -> AsyncIterator[str]:
+    body: dict[str, Any] = {
+        "provider": {"require_parameters": True},
+    }
+    if plugins:
+        body["plugins"] = plugins
+    if extra_body:
+        body.update(extra_body)
+
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        stream=True,
+        extra_body=body,
+    )
+    async for chunk in stream:
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        if not delta:
+            continue
+        text = _extract_stream_delta_text(delta)
+        if text:
+            yield text

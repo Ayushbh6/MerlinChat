@@ -9,7 +9,7 @@ import sys
 import textwrap
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
 
@@ -290,7 +290,13 @@ async def _materialize_workspace_for_run(run: dict[str, Any], step_index: int) -
     }
 
 
-async def execute_run_code(run_id: str, code: str) -> dict[str, Any]:
+async def execute_run_code(
+    run_id: str,
+    code: str,
+    *,
+    on_stdout_chunk: Callable[[str], Awaitable[None]] | None = None,
+    on_stderr_chunk: Callable[[str], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
     if len(code) > MAX_CODE_CHARS:
         raise HTTPException(
             status_code=400, detail=f"code exceeds max size of {MAX_CODE_CHARS} characters"
@@ -361,19 +367,56 @@ async def execute_run_code(run_id: str, code: str) -> dict[str, Any]:
         )
         raise HTTPException(status_code=500, detail=detail) from exc
 
+    stdout_parts: list[bytes] = []
+    stderr_parts: list[bytes] = []
     timed_out = False
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(), timeout=MAX_STEP_EXECUTION_SECONDS
+
+    async def _read_stream(
+        stream: asyncio.StreamReader,
+        parts: list[bytes],
+        callback: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        while True:
+            try:
+                chunk = await stream.read(512)
+            except Exception:
+                break
+            if not chunk:
+                break
+            parts.append(chunk)
+            if callback:
+                try:
+                    await callback(chunk.decode("utf-8", errors="replace"))
+                except Exception:
+                    pass
+
+    async def _consume_streams() -> None:
+        await asyncio.gather(
+            _read_stream(process.stdout, stdout_parts, on_stdout_chunk),
+            _read_stream(process.stderr, stderr_parts, on_stderr_chunk),
         )
+
+    consume_task = asyncio.create_task(_consume_streams())
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=MAX_STEP_EXECUTION_SECONDS)
+        # Process exited naturally — drain any remaining buffered output
+        try:
+            await asyncio.wait_for(consume_task, timeout=3.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            consume_task.cancel()
     except asyncio.TimeoutError:
         timed_out = True
         process.kill()
-        stdout_bytes, stderr_bytes = await process.communicate()
+        consume_task.cancel()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=3.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
 
     duration_ms = int((perf_counter() - started_at) * 1000)
-    stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace")
-    stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    stdout_text = b"".join(stdout_parts).decode("utf-8", errors="replace")
+    stderr_text = b"".join(stderr_parts).decode("utf-8", errors="replace")
 
     if timed_out:
         stderr_text = (stderr_text + "\nExecution timed out.").strip()
