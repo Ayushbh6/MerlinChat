@@ -4,18 +4,21 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>Atlas AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
     <style>
       :root {
-        background: #1a1a1a;
-        color: #ededed;
-        color-scheme: dark;
+        background: linear-gradient(180deg, #f2efe8, #efe5d6);
+        color: #1f1b18;
+        color-scheme: light;
       }
 
-      :root[data-theme='light'] {
-        background: #ebe8e1;
-        color: #22211d;
-        color-scheme: light;
+      :root[data-theme='dark'] {
+        background: linear-gradient(180deg, #0c1117, #16202b);
+        color: #edf3f9;
+        color-scheme: dark;
       }
 
       html,
@@ -35,7 +38,7 @@
         var theme = localStorage.getItem('calendar-theme');
         document.documentElement.setAttribute(
           'data-theme',
-          theme === 'light' ? 'light' : 'dark'
+          theme === 'dark' ? 'dark' : 'light'
         );
       })();
     </script>
