@@ -16,9 +16,9 @@
   --accent-shadow: rgba(163, 93, 46, 0.24);
   --user-bubble: rgba(28, 31, 38, 0.92);
   --user-bubble-border: rgba(28, 31, 38, 0.96);
-  --thread-header: rgba(242, 239, 232, 0.88);
-  --thread-footer: rgba(242, 239, 232, 0.94);
-  --thread-composer: rgba(255, 252, 247, 0.72);
+  --thread-header: transparent;
+  --thread-footer: transparent;
+  --thread-composer: rgba(255, 252, 247, 0.7);
   --thread-composer-border: rgba(113, 83, 46, 0.14);
   --success: #1c7c54;
   --success-soft: rgba(28, 124, 84, 0.12);
@@ -36,8 +36,8 @@
 }
 
 :root[data-theme='dark'] {
-  --bg: #0c1117;
-  --bg-accent: #16202b;
+  --bg: #15171b;
+  --bg-accent: #15171b;
   --surface: rgba(13, 20, 28, 0.82);
   --surface-elevated: rgba(18, 28, 38, 0.95);
   --surface-soft: rgba(92, 136, 181, 0.1);
@@ -53,9 +53,9 @@
   --accent-shadow: rgba(124, 185, 255, 0.18);
   --user-bubble: rgba(6, 8, 12, 0.82);
   --user-bubble-border: rgba(255, 255, 255, 0.06);
-  --thread-header: rgba(12, 17, 23, 0.82);
-  --thread-footer: rgba(12, 17, 23, 0.9);
-  --thread-composer: rgba(17, 22, 29, 0.74);
+  --thread-header: transparent;
+  --thread-footer: transparent;
+  --thread-composer: rgba(24, 26, 31, 0.82);
   --thread-composer-border: rgba(255, 255, 255, 0.06);
   --success: #62d2a2;
   --success-soft: rgba(98, 210, 162, 0.14);

@@ -23,6 +23,11 @@ html {
     linear-gradient(180deg, var(--bg), var(--bg-accent));
 }
 
+:root[data-theme='dark'] html,
+html[data-theme='dark'] {
+  background: var(--bg);
+}
+
 body {
   margin: 0;
   background: transparent;
@@ -112,4 +117,3 @@ a {
   padding-left: 1rem;
   color: var(--text-secondary);
 }
-

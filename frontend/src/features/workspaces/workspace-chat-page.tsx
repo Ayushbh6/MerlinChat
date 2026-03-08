@@ -136,8 +136,8 @@ export function WorkspaceChatPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: 
 
   return (
     <section className="flex h-[calc(100vh-5.5rem)] min-h-0 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-[52rem] items-center justify-between gap-4 px-4 py-4">
+      <header className="shrink-0 bg-[var(--thread-header)]">
+        <div className="mx-auto flex w-full max-w-[56rem] items-start justify-between gap-4 px-5 pb-2 pt-1">
           <div className="min-w-0 space-y-2">
             <Button variant="ghost" className="w-fit" onClick={() => navigate(`/workspaces/${workspaceId}`)}>
               <ArrowLeft className="size-4" />
@@ -152,15 +152,15 @@ export function WorkspaceChatPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: 
       </header>
 
       {threadError ? (
-        <div className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] px-4 py-3 backdrop-blur-xl">
-          <div className="mx-auto w-full max-w-[52rem]">
+        <div className="shrink-0 px-5 py-3">
+          <div className="mx-auto w-full max-w-[56rem]">
             <ErrorBanner message={threadError} />
           </div>
         </div>
       ) : null}
 
       <div ref={feedRef} onScroll={handleFeedScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-7 px-4 py-8">
+        <div className="mx-auto flex w-full max-w-[56rem] flex-col gap-7 px-5 py-4">
           {loadingThread ? <LoadingState label="Loading workspace chat" className="py-6" /> : null}
           {!loadingThread && timeline.length === 0 && !pendingRun ? (
             <EmptyState title="This workspace chat is empty" copy="Ask a project-specific question below to get started." />
@@ -209,8 +209,8 @@ export function WorkspaceChatPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: 
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-[var(--border)]/50 bg-[var(--thread-footer)] backdrop-blur-xl">
-        <div className="mx-auto w-full max-w-[52rem] px-4 py-4">
+      <div className="shrink-0 bg-[var(--thread-footer)]">
+        <div className="mx-auto w-full max-w-[56rem] px-5 pb-4 pt-3">
           <Composer
           value={input}
           onChange={setInput}

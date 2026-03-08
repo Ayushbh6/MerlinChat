@@ -1,6 +1,8 @@
 import base64
 import json
+import logging
 import re
+import traceback
 from typing import Any
 
 from fastapi import HTTPException
@@ -45,6 +47,8 @@ from backend.services.workspace_service import (
     write_workspace_manifest,
 )
 from backend.utils.token_utils import get_encoding, trim_pairs_to_limit
+
+logger = logging.getLogger(__name__)
 
 AGENT_SCHEMA = {
     "name": "agent_turn",
@@ -503,6 +507,26 @@ async def run_agent_loop(run_id: str) -> dict[str, Any]:
                     "code": agent_turn.code,
                     "stdout": "",
                     "stderr": detail,
+                    "exit_code": 1,
+                    "artifacts": [],
+                    "duration_ms": 0,
+                }
+            except Exception as exc:
+                logger.exception(
+                    "Unexpected code execution failure run_id=%s step_index=%s",
+                    run_id,
+                    len(steps) + 1,
+                )
+                execution = {
+                    "code": agent_turn.code,
+                    "stdout": "",
+                    "stderr": "\n".join(
+                        [
+                            "Unexpected execution failure.",
+                            f"error: {type(exc).__name__}: {exc}",
+                            traceback.format_exc(limit=8).strip(),
+                        ]
+                    ),
                     "exit_code": 1,
                     "artifacts": [],
                     "duration_ms": 0,

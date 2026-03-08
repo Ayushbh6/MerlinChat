@@ -1,7 +1,9 @@
 import asyncio
 from datetime import datetime, timezone
 import json
+import logging
 import mimetypes
+import platform
 import shutil
 import sys
 import textwrap
@@ -28,6 +30,8 @@ from backend.services.workspace_service import (
     write_workspace_manifest,
 )
 from backend.runtime.workspace_storage import ROOT_DIR, workspace_storage
+
+logger = logging.getLogger(__name__)
 
 RUNNER_ROOT = ROOT_DIR / "storage" / "run_sandboxes"
 BOOTSTRAP_FILENAME = "_agent_bootstrap.py"
@@ -204,8 +208,44 @@ def _resource_limiter():
 
     memory_bytes = RUNNER_MEMORY_LIMIT_MB * 1024 * 1024
     cpu_limit = max(1, MAX_STEP_EXECUTION_SECONDS)
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
-    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    try:
+        _, current_hard = resource.getrlimit(resource.RLIMIT_CPU)
+        target_soft = min(cpu_limit, current_hard)
+        resource.setrlimit(resource.RLIMIT_CPU, (target_soft, current_hard))
+    except Exception:
+        pass
+
+    try:
+        _, current_hard = resource.getrlimit(resource.RLIMIT_AS)
+        target_soft = min(memory_bytes, current_hard)
+        resource.setrlimit(resource.RLIMIT_AS, (target_soft, current_hard))
+    except Exception:
+        pass
+
+
+def _build_launch_failure_detail(
+    *,
+    run_id: str,
+    step_index: int,
+    sandbox: dict[str, Path],
+    user_code_path: Path,
+    exc: Exception,
+) -> str:
+    return "\n".join(
+        [
+            "Sandbox launch failed before code execution.",
+            f"error: {type(exc).__name__}: {exc}",
+            f"run_id: {run_id}",
+            f"step_index: {step_index}",
+            f"platform: {platform.platform()}",
+            f"python: {sys.executable}",
+            f"workspace_root: {sandbox['workspace_root']}",
+            f"artifacts_root: {sandbox['artifacts_root']}",
+            f"user_code_path: {user_code_path}",
+            f"cpu_limit_seconds: {max(1, MAX_STEP_EXECUTION_SECONDS)}",
+            f"memory_limit_mb: {RUNNER_MEMORY_LIMIT_MB}",
+        ]
+    )
 
 
 async def _materialize_workspace_for_run(run: dict[str, Any], step_index: int) -> dict[str, Path]:
@@ -286,17 +326,40 @@ async def execute_run_code(run_id: str, code: str) -> dict[str, Any]:
         "USER_CODE_PATH": str(user_code_path),
     }
 
-    started_at = perf_counter()
-    process = await asyncio.create_subprocess_exec(
+    logger.info(
+        "Launching sandboxed agent step run_id=%s step_index=%s workspace_root=%s artifacts_root=%s python=%s",
+        run_id,
+        step_index,
+        sandbox["workspace_root"],
+        sandbox["artifacts_root"],
         sys.executable,
-        "-I",
-        str(bootstrap_path),
-        cwd=str(sandbox["workspace_root"]),
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        preexec_fn=_resource_limiter,
     )
+    started_at = perf_counter()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            str(bootstrap_path),
+            cwd=str(sandbox["workspace_root"]),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            preexec_fn=_resource_limiter,
+        )
+    except Exception as exc:
+        detail = _build_launch_failure_detail(
+            run_id=run_id,
+            step_index=step_index,
+            sandbox=sandbox,
+            user_code_path=user_code_path,
+            exc=exc,
+        )
+        logger.exception(
+            "Failed to launch sandboxed agent step run_id=%s step_index=%s",
+            run_id,
+            step_index,
+        )
+        raise HTTPException(status_code=500, detail=detail) from exc
 
     timed_out = False
     try:

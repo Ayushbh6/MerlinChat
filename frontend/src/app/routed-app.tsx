@@ -60,7 +60,7 @@ export function RoutedApp() {
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-transparent text-[var(--text-primary)]">
-      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.5),transparent_34%),radial-gradient(circle_at_85%_15%,color-mix(in_srgb,var(--accent)_20%,transparent),transparent_30%)] dark:bg-[radial-gradient(circle_at_top_left,rgba(124,185,255,0.12),transparent_34%),radial-gradient(circle_at_85%_15%,rgba(124,185,255,0.18),transparent_30%)]" />
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.5),transparent_34%),radial-gradient(circle_at_85%_15%,color-mix(in_srgb,var(--accent)_20%,transparent),transparent_30%)] dark:bg-none" />
       <AppSidebar
         open={sidebarOpen}
         theme={theme}

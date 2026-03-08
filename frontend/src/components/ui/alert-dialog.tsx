@@ -45,13 +45,31 @@ export function AlertDialogHeader({ className, ...props }: React.HTMLAttributes<
   return <div className={cn('space-y-2', className)} {...props} />;
 }
 
-export function AlertDialogTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h2 className={cn('font-heading text-2xl font-semibold tracking-tight text-[var(--text-primary)]', className)} {...props} />;
-}
+export const AlertDialogTitle = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Title>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Title>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Title
+    ref={ref}
+    className={cn('font-heading text-2xl font-semibold tracking-tight text-[var(--text-primary)]', className)}
+    {...props}
+  />
+));
 
-export function AlertDialogDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn('text-sm leading-6 text-[var(--text-secondary)]', className)} {...props} />;
-}
+AlertDialogTitle.displayName = AlertDialogPrimitive.Title.displayName;
+
+export const AlertDialogDescription = React.forwardRef<
+  React.ElementRef<typeof AlertDialogPrimitive.Description>,
+  React.ComponentPropsWithoutRef<typeof AlertDialogPrimitive.Description>
+>(({ className, ...props }, ref) => (
+  <AlertDialogPrimitive.Description
+    ref={ref}
+    className={cn('text-sm leading-6 text-[var(--text-secondary)]', className)}
+    {...props}
+  />
+));
+
+AlertDialogDescription.displayName = AlertDialogPrimitive.Description.displayName;
 
 export function AlertDialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn('flex flex-col-reverse gap-3 sm:flex-row sm:justify-end', className)} {...props} />;

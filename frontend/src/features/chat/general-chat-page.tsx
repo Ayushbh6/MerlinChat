@@ -140,8 +140,8 @@ export function GeneralChatPage({ onChatsUpdated }: { onChatsUpdated: () => Prom
 
   return (
     <section className="flex h-[calc(100vh-5.5rem)] min-h-0 flex-col overflow-hidden">
-      <header className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-[52rem] items-center justify-between gap-4 px-4 py-4">
+      <header className="shrink-0 bg-[var(--thread-header)]">
+        <div className="mx-auto flex w-full max-w-[56rem] items-start justify-between gap-4 px-5 pb-2 pt-1">
           <div className="min-w-0">
             <h1 className="truncate font-heading text-[1.55rem] font-medium tracking-[-0.035em] text-[var(--text-primary)]">
               {conversationTitle}
@@ -152,15 +152,15 @@ export function GeneralChatPage({ onChatsUpdated }: { onChatsUpdated: () => Prom
       </header>
 
       {error ? (
-        <div className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] px-4 py-3 backdrop-blur-xl">
-          <div className="mx-auto w-full max-w-[52rem]">
+        <div className="shrink-0 px-5 py-3">
+          <div className="mx-auto w-full max-w-[56rem]">
             <ErrorBanner message={error} />
           </div>
         </div>
       ) : null}
 
       <div ref={feedRef} onScroll={handleFeedScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-7 px-4 py-8">
+        <div className="mx-auto flex w-full max-w-[56rem] flex-col gap-7 px-5 py-4">
           {loading ? <LoadingState label="Loading conversation" className="py-6" /> : null}
           {!loading && messages.length === 0 ? (
             <EmptyState title="This chat is empty" copy="Send a message below to get the conversation started." />
@@ -178,8 +178,8 @@ export function GeneralChatPage({ onChatsUpdated }: { onChatsUpdated: () => Prom
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-[var(--border)]/50 bg-[var(--thread-footer)] backdrop-blur-xl">
-        <div className="mx-auto w-full max-w-[52rem] px-4 py-4">
+      <div className="shrink-0 bg-[var(--thread-footer)]">
+        <div className="mx-auto w-full max-w-[56rem] px-5 pb-4 pt-3">
           <Composer
           value={input}
           onChange={setInput}
