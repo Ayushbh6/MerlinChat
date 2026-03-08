@@ -139,19 +139,28 @@ export function GeneralChatPage({ onChatsUpdated }: { onChatsUpdated: () => Prom
   }, [loading, location.pathname, navigate, routeState?.initialPrompt, sendMessage]);
 
   return (
-    <section className="flex h-[calc(100vh-5.5rem)] min-h-[40rem] flex-col gap-5">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--text-tertiary)]">Conversation</p>
-          <h1 className="font-heading text-3xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">{conversationTitle}</h1>
+    <section className="flex h-[calc(100vh-5.5rem)] min-h-0 flex-col overflow-hidden">
+      <header className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] backdrop-blur-xl">
+        <div className="mx-auto flex w-full max-w-[52rem] items-center justify-between gap-4 px-4 py-4">
+          <div className="min-w-0">
+            <h1 className="truncate font-heading text-[1.55rem] font-medium tracking-[-0.035em] text-[var(--text-primary)]">
+              {conversationTitle}
+            </h1>
+          </div>
+          <TokenCounter current={currentTokenCount} max={maxContextTokens} />
         </div>
-        <TokenCounter current={currentTokenCount} max={maxContextTokens} />
       </header>
 
-      {error ? <ErrorBanner message={error} /> : null}
+      {error ? (
+        <div className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] px-4 py-3 backdrop-blur-xl">
+          <div className="mx-auto w-full max-w-[52rem]">
+            <ErrorBanner message={error} />
+          </div>
+        </div>
+      ) : null}
 
-      <div className="flex min-h-0 flex-1 flex-col rounded-[32px] border border-[var(--border)] bg-[var(--surface)]/92 p-4 shadow-[0_24px_80px_rgba(15,23,42,0.14)] backdrop-blur-xl sm:p-5">
-        <div ref={feedRef} onScroll={handleFeedScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1 pb-4">
+      <div ref={feedRef} onScroll={handleFeedScroll} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-7 px-4 py-8">
           {loading ? <LoadingState label="Loading conversation" className="py-6" /> : null}
           {!loading && messages.length === 0 ? (
             <EmptyState title="This chat is empty" copy="Send a message below to get the conversation started." />
@@ -167,7 +176,11 @@ export function GeneralChatPage({ onChatsUpdated }: { onChatsUpdated: () => Prom
             />
           ))}
         </div>
-        <Composer
+      </div>
+
+      <div className="shrink-0 border-t border-[var(--border)]/50 bg-[var(--thread-footer)] backdrop-blur-xl">
+        <div className="mx-auto w-full max-w-[52rem] px-4 py-4">
+          <Composer
           value={input}
           onChange={setInput}
           onSubmit={() => void sendMessage()}
@@ -177,9 +190,10 @@ export function GeneralChatPage({ onChatsUpdated }: { onChatsUpdated: () => Prom
           thinkingMode={thinkingMode}
           onToggleThinking={() => setThinkingMode(current => !current)}
           showThinkingToggle
-        />
+            variant="thread"
+          />
+        </div>
       </div>
     </section>
   );
 }
-

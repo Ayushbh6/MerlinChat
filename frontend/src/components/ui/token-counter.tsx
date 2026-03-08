@@ -1,4 +1,3 @@
-import { Cpu } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 export function TokenCounter({
@@ -14,15 +13,13 @@ export function TokenCounter({
     <div
       title="Tokens used in current context"
       className={cn(
-        'inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-2 text-xs font-medium tracking-[0.04em] text-[var(--text-secondary)]',
+        'inline-flex items-center rounded-full border border-[var(--border)]/70 bg-[var(--surface-soft)]/40 px-3 py-1.5 text-[11px] font-medium tracking-[0.02em] text-[var(--text-tertiary)]',
         className
       )}
     >
-      <Cpu className="size-3.5" />
       <span>
         {current.toLocaleString()} / {max.toLocaleString()}
       </span>
     </div>
   );
 }
-

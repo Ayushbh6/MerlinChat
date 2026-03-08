@@ -13,7 +13,7 @@ import { Composer } from '../../components/ui/composer';
 import { TraceAccordion } from '../../components/ui/trace-accordion';
 import { TokenCounter } from '../../components/ui/token-counter';
 import { Card, CardContent } from '../../components/ui/card';
-import { EmptyState, ErrorBanner, LoadingState, PageTitle } from '../../components/ui/state';
+import { EmptyState, ErrorBanner, LoadingState } from '../../components/ui/state';
 import { useMaxContextTokens } from '../../hooks/use-app-config';
 import type { PendingWorkspaceRun, ThreadState } from '../../types';
 import { MessageCard } from '../thread/message-card';
@@ -135,22 +135,32 @@ export function WorkspaceChatPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: 
   const conversation = workspaceState.conversations.find(item => item._id === conversationId);
 
   return (
-    <section className="space-y-5 py-4">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="space-y-3">
-          <Button variant="ghost" className="w-fit" onClick={() => navigate(`/workspaces/${workspaceId}`)}>
-            <ArrowLeft className="size-4" />
-            {workspaceState.workspace.title}
-          </Button>
-          <PageTitle eyebrow="Project conversation" title={conversation?.title || 'Project conversation'} />
+    <section className="flex h-[calc(100vh-5.5rem)] min-h-0 flex-col overflow-hidden">
+      <header className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] backdrop-blur-xl">
+        <div className="mx-auto flex w-full max-w-[52rem] items-center justify-between gap-4 px-4 py-4">
+          <div className="min-w-0 space-y-2">
+            <Button variant="ghost" className="w-fit" onClick={() => navigate(`/workspaces/${workspaceId}`)}>
+              <ArrowLeft className="size-4" />
+              {workspaceState.workspace.title}
+            </Button>
+            <h1 className="truncate font-heading text-[1.55rem] font-medium tracking-[-0.035em] text-[var(--text-primary)]">
+              {conversation?.title || 'Project conversation'}
+            </h1>
+          </div>
+          <TokenCounter current={conversation?.token_count ?? 0} max={maxContextTokens} />
         </div>
-        <TokenCounter current={conversation?.token_count ?? 0} max={maxContextTokens} />
-      </div>
+      </header>
 
-      {threadError ? <ErrorBanner message={threadError} /> : null}
+      {threadError ? (
+        <div className="shrink-0 border-b border-[var(--border)]/50 bg-[var(--thread-header)] px-4 py-3 backdrop-blur-xl">
+          <div className="mx-auto w-full max-w-[52rem]">
+            <ErrorBanner message={threadError} />
+          </div>
+        </div>
+      ) : null}
 
-      <Card className="flex h-[calc(100vh-10rem)] min-h-[42rem] flex-col p-4 sm:p-5">
-        <div ref={feedRef} onScroll={handleFeedScroll} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-1 pb-4">
+      <div ref={feedRef} onScroll={handleFeedScroll} className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex w-full max-w-[52rem] flex-col gap-7 px-4 py-8">
           {loadingThread ? <LoadingState label="Loading workspace chat" className="py-6" /> : null}
           {!loadingThread && timeline.length === 0 && !pendingRun ? (
             <EmptyState title="This workspace chat is empty" copy="Ask a project-specific question below to get started." />
@@ -185,7 +195,7 @@ export function WorkspaceChatPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: 
                   pending
                 />
               ) : null}
-              <Card className="rounded-[24px] border-[var(--border)] bg-[var(--surface-elevated)]/80">
+              <Card className="max-w-3xl rounded-[14px] border-transparent bg-[var(--surface-soft)]/45 shadow-none">
                 <CardContent className="flex items-center justify-between gap-4 p-4">
                   <div className="flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
                     <LoaderCircle className="size-4 animate-spin text-[var(--accent)]" />
@@ -197,33 +207,33 @@ export function WorkspaceChatPage({ onWorkspaceUpdated }: { onWorkspaceUpdated: 
             </>
           ) : null}
         </div>
+      </div>
 
-        <Composer
+      <div className="shrink-0 border-t border-[var(--border)]/50 bg-[var(--thread-footer)] backdrop-blur-xl">
+        <div className="mx-auto w-full max-w-[52rem] px-4 py-4">
+          <Composer
           value={input}
           onChange={setInput}
           onSubmit={() => void handleSend()}
           placeholder="Reply in this project..."
           disabled={loadingThread || !!pendingRun}
           isLoading={!!pendingRun}
-        />
-      </Card>
+            variant="thread"
+          />
+        </div>
+      </div>
     </section>
   );
 }
 
 function PageLoading({ title }: { title: string }) {
-  return (
-    <section className="space-y-4 py-4">
-      <PageTitle eyebrow="Loading" title={title} />
-      <LoadingState label={title} />
-    </section>
-  );
+  return <section className="space-y-4 py-4"><LoadingState label={title} /></section>;
 }
 
 function PageError({ title, message }: { title: string; message: string }) {
   return (
     <section className="space-y-4 py-4">
-      <PageTitle eyebrow="Error" title={title} />
+      <h1 className="font-heading text-3xl font-medium tracking-[-0.04em] text-[var(--text-primary)]">{title}</h1>
       <ErrorBanner message={message} />
     </section>
   );
