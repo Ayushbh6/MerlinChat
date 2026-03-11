@@ -351,8 +351,8 @@ export async function streamWorkspaceRunEvents(payload: {
   onEvent: (event: RunEvent) => void;
 }) {
   const TERMINAL_TYPES = new Set(['turn.completed', 'turn.failed']);
-  const MAX_RECONNECTS = 8;
-  const RECONNECT_DELAY_MS = 1500;
+  const MAX_RECONNECTS = 5;
+  const RECONNECT_DELAY_MS = 400;
 
   const normalizeRunEvent = (value: unknown): RunEvent | null => {
     if (!value || typeof value !== 'object') return null;
@@ -444,7 +444,10 @@ export async function streamWorkspaceRunEvents(payload: {
               try {
                 const normalized = normalizeRunEvent(JSON.parse(dataLine));
                 if (normalized) {
-                  lastSeq = Math.max(lastSeq, normalized.seq);
+                  if (normalized.seq <= lastSeq) {
+                    continue;
+                  }
+                  lastSeq = normalized.seq;
                   payload.onEvent(normalized);
                   if (TERMINAL_TYPES.has(normalized.type)) {
                     reachedTerminal = true;

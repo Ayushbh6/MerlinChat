@@ -1,15 +1,29 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { getConversations, getWorkspaces } from '../api';
 import { SIDEBAR_STORAGE_KEY, THEME_STORAGE_KEY } from './constants';
 import { AppSidebar } from './app-sidebar';
-import { ChatHomePage } from '../features/chat/chat-home-page';
-import { GeneralChatPage } from '../features/chat/general-chat-page';
-import { WorkspaceIndexPage } from '../features/workspaces/workspace-index-page';
-import { CreateWorkspacePage } from '../features/workspaces/create-workspace-page';
-import { WorkspaceHubPage } from '../features/workspaces/workspace-hub-page';
-import { WorkspaceChatPage } from '../features/workspaces/workspace-chat-page';
 import type { Conversation, Theme, Workspace } from '../types';
+import { LoadingState } from '../components/ui/state';
+
+const ChatHomePage = lazy(() =>
+  import('../features/chat/chat-home-page').then(module => ({ default: module.ChatHomePage }))
+);
+const GeneralChatPage = lazy(() =>
+  import('../features/chat/general-chat-page').then(module => ({ default: module.GeneralChatPage }))
+);
+const WorkspaceIndexPage = lazy(() =>
+  import('../features/workspaces/workspace-index-page').then(module => ({ default: module.WorkspaceIndexPage }))
+);
+const CreateWorkspacePage = lazy(() =>
+  import('../features/workspaces/create-workspace-page').then(module => ({ default: module.CreateWorkspacePage }))
+);
+const WorkspaceHubPage = lazy(() =>
+  import('../features/workspaces/workspace-hub-page').then(module => ({ default: module.WorkspaceHubPage }))
+);
+const WorkspaceChatPage = lazy(() =>
+  import('../features/workspaces/workspace-chat-page').then(module => ({ default: module.WorkspaceChatPage }))
+);
 
 export function RoutedApp() {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -79,17 +93,27 @@ export function RoutedApp() {
         ].join(' ')}
       >
         <div className="mx-auto w-full">
-          <Routes>
-            <Route path="/" element={<Navigate to="/chat" replace />} />
-            <Route path="/chat" element={<ChatHomePage onChatsUpdated={refreshGeneralChats} />} />
-            <Route path="/chat/:conversationId" element={<GeneralChatPage onChatsUpdated={refreshGeneralChats} />} />
-            <Route path="/workspaces" element={<WorkspaceIndexPage workspaces={workspaces} loading={loadingWorkspaces} />} />
-            <Route path="/workspaces/new" element={<CreateWorkspacePage onCreated={refreshWorkspaces} />} />
-            <Route path="/workspaces/:workspaceId" element={<WorkspaceHubPage onWorkspaceUpdated={refreshWorkspaces} />} />
-            <Route path="/workspaces/:workspaceId/chats/:conversationId" element={<WorkspaceChatPage onWorkspaceUpdated={refreshWorkspaces} />} />
-          </Routes>
+          <Suspense fallback={<RouteLoadingState />}>
+            <Routes>
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/chat" element={<ChatHomePage onChatsUpdated={refreshGeneralChats} />} />
+              <Route path="/chat/:conversationId" element={<GeneralChatPage onChatsUpdated={refreshGeneralChats} />} />
+              <Route path="/workspaces" element={<WorkspaceIndexPage workspaces={workspaces} loading={loadingWorkspaces} />} />
+              <Route path="/workspaces/new" element={<CreateWorkspacePage onCreated={refreshWorkspaces} />} />
+              <Route path="/workspaces/:workspaceId" element={<WorkspaceHubPage onWorkspaceUpdated={refreshWorkspaces} />} />
+              <Route path="/workspaces/:workspaceId/chats/:conversationId" element={<WorkspaceChatPage onWorkspaceUpdated={refreshWorkspaces} />} />
+            </Routes>
+          </Suspense>
         </div>
       </main>
     </div>
+  );
+}
+
+function RouteLoadingState() {
+  return (
+    <section className="space-y-4 py-8">
+      <LoadingState label="Loading view" />
+    </section>
   );
 }

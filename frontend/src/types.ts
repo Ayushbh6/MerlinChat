@@ -181,6 +181,7 @@ export interface RunEvent {
     | 'step.completed'
     | 'artifact.created'
     | 'answer.delta'
+    | 'answer.reset'
     | 'turn.completed'
     | 'turn.failed';
   scope?: string;
@@ -218,11 +219,16 @@ export interface LiveRunState {
     | 'done';
   thought: string;
   answerDraft: string;
+  finalAnswer: string;
   activeStep: LiveRunStepDraft | null;
   completedSteps: RunStep[];
-  eventTrail: RunEvent[];
   lastSeq: number;
   failureReason?: string | null;
+}
+
+export interface LiveRunHandoffState {
+  runId: string;
+  turnId?: string | null;
 }
 
 export interface ExecutionPanelState {

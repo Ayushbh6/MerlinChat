@@ -2,9 +2,8 @@ import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Components } from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, Copy } from 'lucide-react';
+import { isSupportedCodeLanguage, oneDark, SyntaxHighlighter } from '../../lib/code-highlighter';
 import { cn } from '../../lib/utils';
 
 function CopyCodeButton({ text }: { text: string }) {
@@ -32,7 +31,7 @@ const markdownComponents: Components = {
     const match = /language-(\w+)/.exec(className || '');
     const codeText = String(children).replace(/\n$/, '');
 
-    if (match) {
+    if (match && isSupportedCodeLanguage(match[1])) {
       return (
         <div className="group relative my-2 overflow-hidden rounded-xl border border-[var(--border)]/40" style={{ background: 'var(--code-bg)' }}>
           <CopyCodeButton text={codeText} />
@@ -56,6 +55,15 @@ const markdownComponents: Components = {
       );
     }
 
+    if (match) {
+      return (
+        <div className="group relative my-2 overflow-hidden rounded-xl border border-[var(--border)]/40" style={{ background: 'var(--code-bg)' }}>
+          <CopyCodeButton text={codeText} />
+          <pre className="overflow-auto px-4 py-4 text-[13px] leading-7 text-[var(--code-fg)]">{codeText}</pre>
+        </div>
+      );
+    }
+
     return (
       <code className={className} {...props}>
         {children}
@@ -73,4 +81,3 @@ export function MarkdownMessage({ content, className }: { content: string; class
     </div>
   );
 }
-

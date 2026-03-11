@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { GripVertical, PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { GripVertical, PanelRightClose, PanelRightOpen, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Button } from './button';
 
@@ -9,6 +9,7 @@ interface WorkspaceSplitPaneProps {
   panelOpen: boolean;
   onPanelOpenChange: (open: boolean) => void;
   storageKey: string;
+  mobileTrigger?: ReactNode;
 }
 
 const DEFAULT_RATIO = 0.52;
@@ -21,24 +22,35 @@ export function WorkspaceSplitPane({
   panelOpen,
   onPanelOpenChange,
   storageKey,
+  mobileTrigger,
 }: WorkspaceSplitPaneProps) {
   const ratioKey = `${storageKey}:ratio`;
-  const [ratio, setRatio] = useState(DEFAULT_RATIO);
-
-  useEffect(() => {
+  const [isDesktop, setIsDesktop] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
+  );
+  const [ratio, setRatio] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_RATIO;
     const stored = window.localStorage.getItem(ratioKey);
-    if (!stored) return;
+    if (!stored) return DEFAULT_RATIO;
     const parsed = Number(stored);
-    if (Number.isFinite(parsed)) {
-      setRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, parsed)));
-    }
-  }, [ratioKey]);
+    if (!Number.isFinite(parsed)) return DEFAULT_RATIO;
+    return Math.min(MAX_RATIO, Math.max(MIN_RATIO, parsed));
+  });
 
   const desktopColumns = useMemo(() => {
     if (!panelOpen) return 'minmax(0,1fr)';
     const leftWidth = `${(ratio * 100).toFixed(2)}%`;
     return `${leftWidth} 14px minmax(22rem, 1fr)`;
   }, [panelOpen, ratio]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(min-width: 1024px)');
+    const update = () => setIsDesktop(mediaQuery.matches);
+    update();
+    mediaQuery.addEventListener('change', update);
+    return () => mediaQuery.removeEventListener('change', update);
+  }, []);
 
   function updateRatio(clientX: number, host: HTMLDivElement) {
     const bounds = host.getBoundingClientRect();
@@ -48,17 +60,17 @@ export function WorkspaceSplitPane({
     window.localStorage.setItem(ratioKey, String(clamped));
   }
 
-  return (
-    <>
-      <div className="hidden min-h-0 flex-1 lg:flex lg:flex-col">
-        <div className="flex items-center justify-end px-6 pb-3 pt-1">
+  if (isDesktop) {
+    return (
+      <div className="min-h-0 flex-1 flex-col lg:flex">
+        <div className="flex items-center justify-end px-4 pb-2 pt-0.5">
           <Button type="button" variant="ghost" size="sm" onClick={() => onPanelOpenChange(!panelOpen)}>
             {panelOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
-            {panelOpen ? 'Hide activity' : 'Show activity'}
+            {panelOpen ? 'Hide companion' : 'Show companion'}
           </Button>
         </div>
         <div
-          className="grid min-h-0 flex-1 gap-0 px-6 pb-5"
+          className="grid min-h-0 flex-1 gap-0 px-4 pb-4 transition-[grid-template-columns] duration-300 ease-out motion-reduce:transition-none"
           style={{ gridTemplateColumns: desktopColumns }}
           ref={node => {
             if (!node || !panelOpen) return;
@@ -107,22 +119,44 @@ export function WorkspaceSplitPane({
                   <GripVertical className="size-4 rotate-90" />
                 </span>
               </button>
-              <div className="min-h-0 overflow-hidden border-l border-[var(--border)]/60 pl-6">{right}</div>
+              <div className="min-h-0 overflow-hidden border-l border-[var(--border)]/60 pl-4">{right}</div>
             </>
           ) : null}
         </div>
       </div>
+    );
+  }
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-4 lg:hidden">
-        <div className="min-h-0 overflow-hidden">{left}</div>
-        <div className="flex justify-end">
-          <Button type="button" variant="ghost" size="sm" onClick={() => onPanelOpenChange(!panelOpen)}>
-            {panelOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
-            {panelOpen ? 'Hide activity' : 'Show activity'}
-          </Button>
-        </div>
-        {panelOpen ? <div className="min-h-0 overflow-hidden border-t border-[var(--border)]/60 pt-3">{right}</div> : null}
-      </div>
-    </>
+  return (
+    <div className="flex min-h-0 flex-1 flex-col px-3 pb-3 lg:hidden">
+      <div className="min-h-0 flex-1 overflow-hidden">{left}</div>
+      {mobileTrigger ? <div className="shrink-0">{mobileTrigger}</div> : null}
+      {panelOpen ? (
+        <>
+          <button
+            type="button"
+            aria-label="Close workspace companion overlay"
+            className="fixed inset-0 z-40 bg-black/30 backdrop-blur-[2px]"
+            onClick={() => onPanelOpenChange(false)}
+          />
+          <div className="fixed inset-x-0 bottom-0 z-50 h-[70vh] rounded-t-[28px] border border-[var(--border)]/60 bg-[var(--surface-elevated)] shadow-[0_-18px_60px_rgba(15,23,42,0.28)] transition-transform duration-300 ease-out motion-reduce:transition-none">
+            <div className="flex items-center justify-between px-4 pb-2 pt-3">
+              <div className="mx-auto h-1.5 w-14 rounded-full bg-[var(--border)]" />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-3 top-2"
+                onClick={() => onPanelOpenChange(false)}
+                aria-label="Close workspace companion"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+            <div className="min-h-0 h-[calc(70vh-2.5rem)] overflow-hidden px-4 pb-4">{right}</div>
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }

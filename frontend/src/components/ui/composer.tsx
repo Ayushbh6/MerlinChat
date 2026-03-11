@@ -44,12 +44,12 @@ export function Composer({
     <div className={cn('w-full', centered ? 'mx-auto max-w-4xl' : '')}>
       <div
         className={cn(
-          'p-3 backdrop-blur-xl',
+          'backdrop-blur-xl',
           variant === 'hero'
-            ? 'rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 shadow-[0_24px_70px_rgba(15,23,42,0.18)]'
+            ? 'rounded-2xl border border-[var(--border)] bg-[var(--surface)]/95 p-3 shadow-[0_24px_70px_rgba(15,23,42,0.18)]'
             : variant === 'workspace'
-              ? 'rounded-2xl bg-[var(--thread-composer)]/72 shadow-[0_8px_32px_rgba(2,8,23,0.12)]'
-              : 'rounded-xl border border-[var(--thread-composer-border)] bg-[var(--thread-composer)] shadow-[0_4px_20px_rgba(2,8,23,0.10)]'
+              ? 'rounded-[22px] bg-[var(--thread-composer)]/72 p-2.5 shadow-[0_8px_24px_rgba(2,8,23,0.12)]'
+              : 'rounded-xl border border-[var(--thread-composer-border)] bg-[var(--thread-composer)] p-3 shadow-[0_4px_20px_rgba(2,8,23,0.10)]'
         )}
       >
         <textarea
@@ -60,8 +60,12 @@ export function Composer({
           disabled={disabled}
           placeholder={placeholder}
           className={cn(
-            'max-h-80 w-full resize-none bg-transparent px-3 py-3 text-sm leading-7 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)]',
-            variant === 'hero' ? 'min-h-28' : variant === 'workspace' ? 'min-h-20 text-[15px]' : 'min-h-16'
+            'max-h-80 w-full resize-none bg-transparent px-3 text-sm leading-7 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)]',
+            variant === 'hero'
+              ? 'min-h-28 py-3'
+              : variant === 'workspace'
+                ? 'min-h-16 py-2 text-[15px] leading-[1.65rem]'
+                : 'min-h-16 py-3'
           )}
           onChange={event => onChange(event.target.value)}
           onKeyDown={event => {
@@ -73,12 +77,12 @@ export function Composer({
         />
         <div
           className={cn(
-            'flex items-center justify-between gap-3 px-2 pt-3',
+            'flex items-center justify-between gap-3 px-2',
             variant === 'hero'
-              ? 'border-t border-[var(--border)]'
+              ? 'border-t border-[var(--border)] pt-3'
               : variant === 'workspace'
-                ? 'border-t border-white/8'
-                : 'border-t border-[var(--thread-composer-border)]/80'
+                ? 'border-t border-white/8 pt-2.5'
+                : 'border-t border-[var(--thread-composer-border)]/80 pt-3'
           )}
         >
           {showThinkingToggle ? (

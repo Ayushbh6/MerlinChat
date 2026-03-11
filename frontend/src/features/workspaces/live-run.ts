@@ -12,6 +12,10 @@ function asArtifacts(value: unknown): RunStepArtifact[] {
   return Array.isArray(value) ? (value as RunStepArtifact[]) : [];
 }
 
+function hasCompletedStep(state: LiveRunState, stepIndex: number) {
+  return state.completedSteps.some(item => item.step_index === stepIndex);
+}
+
 function ensureActiveStep(state: LiveRunState, stepIndex: number, thought?: string) {
   if (state.activeStep && state.activeStep.step_index === stepIndex) {
     if (thought) {
@@ -49,20 +53,29 @@ export function createLiveRunState(runId: string): LiveRunState {
     phase: 'initializing',
     thought: '',
     answerDraft: '',
+    finalAnswer: '',
     activeStep: null,
     completedSteps: [],
-    eventTrail: [],
     lastSeq: 0,
     failureReason: null,
   };
 }
 
 export function applyRunEvent(current: LiveRunState, event: RunEvent): LiveRunState {
+  if (event.run_id !== current.runId) {
+    return current;
+  }
+  if (current.turnId && event.turn_id && event.turn_id !== current.turnId) {
+    return current;
+  }
+  if (event.seq <= current.lastSeq) {
+    return current;
+  }
+
   const state: LiveRunState = {
     ...current,
     completedSteps: [...current.completedSteps],
     activeStep: current.activeStep ? { ...current.activeStep, artifacts: [...current.activeStep.artifacts] } : null,
-    eventTrail: [...current.eventTrail, event],
     lastSeq: event.seq,
   };
   const payload = event.ui_payload || event.payload || {};
@@ -83,6 +96,9 @@ export function applyRunEvent(current: LiveRunState, event: RunEvent): LiveRunSt
       state.phase = 'initializing';
       return state;
     case 'thought.updated':
+      if (typeof payload.step_index === 'number' && hasCompletedStep(state, payload.step_index)) {
+        return state;
+      }
       state.status = state.status === 'idle' ? 'running' : state.status;
       state.thought = asString(payload.thought);
       state.phase = 'thinking';
@@ -91,27 +107,43 @@ export function applyRunEvent(current: LiveRunState, event: RunEvent): LiveRunSt
       }
       return state;
     case 'step.started': {
+      const stepIndex = asNumber(payload.step_index, state.completedSteps.length + 1);
+      if (hasCompletedStep(state, stepIndex)) {
+        return state;
+      }
       state.status = 'running';
       state.phase = 'coding';
-      const step = ensureActiveStep(state, asNumber(payload.step_index, state.completedSteps.length + 1), asString(payload.thought));
+      const step = ensureActiveStep(state, stepIndex, asString(payload.thought));
       step.status = 'running';
       return state;
     }
     case 'step.code.delta': {
+      const stepIndex = asNumber(payload.step_index, state.completedSteps.length + 1);
+      if (hasCompletedStep(state, stepIndex)) {
+        return state;
+      }
       state.phase = 'coding';
-      const step = ensureActiveStep(state, asNumber(payload.step_index, state.completedSteps.length + 1));
+      const step = ensureActiveStep(state, stepIndex);
       step.code += asString(payload.chunk);
       return state;
     }
     case 'step.stdout.delta': {
+      const stepIndex = asNumber(payload.step_index, state.completedSteps.length + 1);
+      if (hasCompletedStep(state, stepIndex)) {
+        return state;
+      }
       state.phase = 'executing';
-      const step = ensureActiveStep(state, asNumber(payload.step_index, state.completedSteps.length + 1));
+      const step = ensureActiveStep(state, stepIndex);
       step.stdout += asString(payload.chunk);
       return state;
     }
     case 'step.stderr.delta': {
+      const stepIndex = asNumber(payload.step_index, state.completedSteps.length + 1);
+      if (hasCompletedStep(state, stepIndex)) {
+        return state;
+      }
       state.phase = 'executing';
-      const step = ensureActiveStep(state, asNumber(payload.step_index, state.completedSteps.length + 1));
+      const step = ensureActiveStep(state, stepIndex);
       step.stderr += asString(payload.chunk);
       return state;
     }
@@ -139,6 +171,9 @@ export function applyRunEvent(current: LiveRunState, event: RunEvent): LiveRunSt
     }
     case 'artifact.created':
       if (state.activeStep && state.activeStep.step_index === asNumber(payload.step_index, state.activeStep.step_index)) {
+        if (hasCompletedStep(state, state.activeStep.step_index)) {
+          return state;
+        }
         state.activeStep.artifacts = [...state.activeStep.artifacts, ...(asArtifacts([payload.artifact]))];
       }
       return state;
@@ -147,14 +182,24 @@ export function applyRunEvent(current: LiveRunState, event: RunEvent): LiveRunSt
       state.phase = 'answering';
       state.answerDraft += asString(payload.chunk);
       return state;
+    case 'answer.reset':
+      state.answerDraft = '';
+      state.finalAnswer = '';
+      return state;
     case 'turn.completed':
       state.status = 'completed';
       state.phase = 'done';
+      state.finalAnswer = asString(payload.final_answer) || state.answerDraft;
+      if (!state.answerDraft && state.finalAnswer) {
+        state.answerDraft = state.finalAnswer;
+      }
+      state.activeStep = null;
       return state;
     case 'turn.failed':
       state.status = 'failed';
       state.phase = 'done';
       state.failureReason = asString(payload.failure_reason) || 'Workspace run failed';
+      state.activeStep = null;
       return state;
     default:
       return state;

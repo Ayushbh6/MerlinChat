@@ -15,6 +15,8 @@ from backend.core.constants import DEFAULT_MODEL, MAX_CONTEXT_TOKENS
 from backend.core.llm_client import client
 from backend.core.redis_client import redis_async_client
 from backend.db.database import (
+    close_database,
+    init_database,
     agent_debug_payloads_collection,
     agent_trace_events_collection,
     agent_traces_collection,
@@ -109,6 +111,7 @@ class ChatRequest(BaseModel):
 
 @app.on_event("startup")
 async def ensure_indexes():
+    init_database()
     await conversation_turns_collection.create_index(
         [("conversation_id", 1), ("started_at", 1)]
     )
@@ -123,6 +126,11 @@ async def ensure_indexes():
     await agent_debug_payloads_collection.create_index(
         [("trace_id", 1), ("created_at", 1)]
     )
+
+
+@app.on_event("shutdown")
+async def shutdown_database():
+    close_database()
 
 
 @app.get("/api/config")

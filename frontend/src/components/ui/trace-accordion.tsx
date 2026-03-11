@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { BrainCircuit, Check, ChevronDown, ChevronRight, FileStack, X } from 'lucide-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { oneDark, SyntaxHighlighter } from '../../lib/code-highlighter';
 import type { Run, RunStep } from '../../types';
 import { Badge } from './badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './collapsible';

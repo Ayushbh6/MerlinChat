@@ -23,7 +23,7 @@ from backend.core.constants import (
     MAX_TOTAL_ATTACHED_IMAGE_BYTES,
     MAX_TOTAL_RUN_SECONDS,
 )
-from backend.core.llm_client import create_structured_completion
+from backend.core.llm_client import create_structured_completion, open_structured_completion_stream
 from backend.db.database import messages_collection
 from backend.prompts.agent_prompt import (
     build_agent_system_prompt,
@@ -105,6 +105,8 @@ AGENT_SCHEMA = {
 MAX_REPAIR_ATTEMPTS = 1
 MAX_PRIOR_STEPS_IN_PROMPT = MAX_AGENT_TURNS
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+FAKE_STREAM_CHUNK_SIZE = 220
+FAKE_STREAM_DELAY_SECONDS = 0.012
 
 
 def _truncate_tail(value: str, max_bytes: int) -> str:
@@ -155,6 +157,82 @@ def _chunk_text(value: str, *, chunk_size: int = 160) -> list[str]:
             chunks.append(line[start : start + chunk_size])
             start += chunk_size
     return chunks
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _stream_final_answer_enabled() -> bool:
+    return _env_flag("OPENROUTER_STREAM_FINAL_ANSWER", True)
+
+
+def _max_streamed_final_answer_chars() -> int:
+    return _env_int("MAX_STREAMED_FINAL_ANSWER_CHARS", 40000)
+
+
+def _build_agent_turn_messages(
+    payload: dict[str, Any],
+    attached_images: list[dict[str, Any]],
+    *,
+    repair_message: str | None = None,
+) -> list[dict[str, Any]]:
+    return [
+        {"role": "system", "content": build_agent_system_prompt()},
+        {
+            "role": "user",
+            "content": _build_agent_user_message_content(
+                build_agent_turn_prompt(
+                    payload,
+                    repair_message=repair_message,
+                ),
+                attached_images,
+            ),
+        },
+    ]
+
+
+async def _replay_answer_deltas(run_id: str, final_answer: str) -> None:
+    for chunk in _chunk_text(final_answer, chunk_size=FAKE_STREAM_CHUNK_SIZE):
+        await append_run_event(
+            run_id,
+            "answer.delta",
+            {"chunk": chunk},
+        )
+        await asyncio.sleep(FAKE_STREAM_DELAY_SECONDS)
+
+
+def _extract_partial_agent_turn(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(exclude_none=False)
+        if isinstance(dumped, dict):
+            return dumped
+
+    return None
+
+
+class StructuredStreamError(Exception):
+    def __init__(self, message: str, *, emitted_answer: str = "") -> None:
+        super().__init__(message)
+        self.emitted_answer = emitted_answer
 
 
 async def _emit_step_stream(
@@ -457,12 +535,14 @@ def _build_agent_user_message_content(
     return content
 
 
-async def _request_agent_turn(
+async def _request_agent_turn_non_streaming(
     *,
     model: str,
     payload: dict[str, Any],
     attached_images: list[dict[str, Any]],
     code_step_count: int,
+    run_id: str,
+    replay_final_answer: bool,
 ) -> AgentTurn:
     repair_message: str | None = None
     last_error = "model did not return a valid AgentTurn payload"
@@ -470,19 +550,11 @@ async def _request_agent_turn(
     for _ in range(MAX_REPAIR_ATTEMPTS + 1):
         response = await create_structured_completion(
             model=model,
-            messages=[
-                {"role": "system", "content": build_agent_system_prompt()},
-                {
-                    "role": "user",
-                    "content": _build_agent_user_message_content(
-                        build_agent_turn_prompt(
-                            payload,
-                            repair_message=repair_message,
-                        ),
-                        attached_images,
-                    ),
-                },
-            ],
+            messages=_build_agent_turn_messages(
+                payload,
+                attached_images,
+                repair_message=repair_message,
+            ),
             json_schema=AGENT_SCHEMA,
             plugins=[{"id": "response-healing"}],
             extra_body={
@@ -508,7 +580,10 @@ async def _request_agent_turn(
         try:
             parsed = json.loads(raw_text)
             agent_turn = AgentTurn.model_validate(parsed)
-            return validate_agent_turn(agent_turn, code_step_count)
+            validated_turn = validate_agent_turn(agent_turn, code_step_count)
+            if replay_final_answer and validated_turn.action == "final_answer":
+                await _replay_answer_deltas(run_id, validated_turn.final_answer or "")
+            return validated_turn
         except (json.JSONDecodeError, ValidationError, HTTPException) as exc:
             last_error = str(exc)
             repair_message = (
@@ -517,6 +592,150 @@ async def _request_agent_turn(
             )
 
     raise HTTPException(status_code=502, detail=last_error)
+
+
+async def _request_agent_turn_streaming(
+    *,
+    run_id: str,
+    model: str,
+    payload: dict[str, Any],
+    attached_images: list[dict[str, Any]],
+    code_step_count: int,
+) -> AgentTurn:
+    emitted_answer = ""
+    max_stream_chars = _max_streamed_final_answer_chars()
+
+    try:
+        async with open_structured_completion_stream(
+            model=model,
+            messages=_build_agent_turn_messages(payload, attached_images),
+            response_format=AgentTurn,
+            plugins=[{"id": "response-healing", "enabled": False}],
+            extra_body={
+                "reasoning": {"enabled": True, "exclude": True},
+                "include_reasoning": False,
+            },
+        ) as stream:
+            async for event in stream:
+                if getattr(event, "type", None) != "content.delta":
+                    continue
+
+                partial_turn = _extract_partial_agent_turn(getattr(event, "parsed", None))
+                if not partial_turn or partial_turn.get("action") != "final_answer":
+                    continue
+
+                partial_answer = partial_turn.get("final_answer")
+                if not isinstance(partial_answer, str):
+                    continue
+
+                visible_answer = partial_answer[:max_stream_chars]
+                if emitted_answer and not visible_answer.startswith(emitted_answer):
+                    raise StructuredStreamError(
+                        "streamed final_answer diverged from the previously emitted prefix",
+                        emitted_answer=emitted_answer,
+                    )
+
+                next_chunk = visible_answer[len(emitted_answer) :]
+                if next_chunk:
+                    await append_run_event(
+                        run_id,
+                        "answer.delta",
+                        {"chunk": next_chunk},
+                    )
+                    emitted_answer = visible_answer
+
+            final_completion = await stream.get_final_completion()
+    except StructuredStreamError:
+        raise
+    except Exception as exc:
+        raise StructuredStreamError(str(exc), emitted_answer=emitted_answer) from exc
+
+    if not getattr(final_completion, "choices", None):
+        raise StructuredStreamError("model returned no choices", emitted_answer=emitted_answer)
+
+    message = final_completion.choices[0].message
+    parsed_message = getattr(message, "parsed", None)
+    if isinstance(parsed_message, AgentTurn):
+        agent_turn = parsed_message
+    else:
+        raw_text = _extract_message_text(message).strip()
+        if not raw_text:
+            raise StructuredStreamError("model returned empty content", emitted_answer=emitted_answer)
+        try:
+            agent_turn = AgentTurn.model_validate(json.loads(raw_text))
+        except (json.JSONDecodeError, ValidationError) as exc:
+            raise StructuredStreamError(str(exc), emitted_answer=emitted_answer) from exc
+
+    return validate_agent_turn(agent_turn, code_step_count)
+
+
+async def _request_agent_turn(
+    *,
+    run_id: str,
+    model: str,
+    payload: dict[str, Any],
+    attached_images: list[dict[str, Any]],
+    code_step_count: int,
+) -> AgentTurn:
+    if not _stream_final_answer_enabled():
+        return await _request_agent_turn_non_streaming(
+            model=model,
+            payload=payload,
+            attached_images=attached_images,
+            code_step_count=code_step_count,
+            run_id=run_id,
+            replay_final_answer=True,
+        )
+
+    try:
+        agent_turn = await _request_agent_turn_streaming(
+            run_id=run_id,
+            model=model,
+            payload=payload,
+            attached_images=attached_images,
+            code_step_count=code_step_count,
+        )
+        logger.info(
+            "structured_stream_success run_id=%s model=%s action=%s",
+            run_id,
+            model,
+            agent_turn.action,
+        )
+        return agent_turn
+    except StructuredStreamError as exc:
+        fallback_requires_reset = bool(exc.emitted_answer)
+        logger.warning(
+            "%s run_id=%s model=%s error=%s",
+            "structured_stream_midanswer_reset_fallback"
+            if fallback_requires_reset
+            else "structured_stream_preanswer_fallback",
+            run_id,
+            model,
+            exc,
+        )
+        if fallback_requires_reset:
+            await append_run_event(
+                run_id,
+                "answer.reset",
+                {"reason": "fallback_replay"},
+            )
+
+        try:
+            return await _request_agent_turn_non_streaming(
+                model=model,
+                payload=payload,
+                attached_images=attached_images,
+                code_step_count=code_step_count,
+                run_id=run_id,
+                replay_final_answer=True,
+            )
+        except Exception:
+            logger.exception(
+                "structured_stream_terminal_failure run_id=%s model=%s",
+                run_id,
+                model,
+            )
+            raise
 
 
 async def run_agent_loop(run_id: str, worker_task_id: str | None = None) -> dict[str, Any]:
@@ -593,6 +812,7 @@ async def run_agent_loop(run_id: str, worker_task_id: str | None = None) -> dict
                 raw_debug_payload={"model": model, "payload": payload},
             )
             agent_turn = await _request_agent_turn(
+                run_id=run_id,
                 model=model,
                 payload=payload,
                 attached_images=attached_images,
@@ -626,16 +846,6 @@ async def run_agent_loop(run_id: str, worker_task_id: str | None = None) -> dict
                 final_answer = draft_final_answer
                 if not final_answer:
                     raise HTTPException(status_code=502, detail="model returned empty final answer")
-
-                # Stream the answer to the frontend in chunks for a
-                # smooth typewriter effect without a lossy rewrite.
-                for chunk in _chunk_text(final_answer, chunk_size=220):
-                    await append_run_event(
-                        run_id,
-                        "answer.delta",
-                        {"chunk": chunk},
-                    )
-                    await asyncio.sleep(0.012)
 
                 trace_summary = await build_trace_summary(run["trace_id"])
                 assistant_message = await store_message(
@@ -731,13 +941,13 @@ async def run_agent_loop(run_id: str, worker_task_id: str | None = None) -> dict
                 },
             )
             # Stream code deltas with a small delay between chunks for a typewriter effect
-            for chunk in _chunk_text(agent_turn.code):
+            for chunk in _chunk_text(agent_turn.code, chunk_size=320):
                 await append_run_event(
                     run_id,
                     "step.code.delta",
                     {"step_index": step_index, "chunk": chunk},
                 )
-                await asyncio.sleep(0.018)  # ~18 ms → smooth typewriter render
+                await asyncio.sleep(0.008)
 
             # Live stdout / stderr callbacks — emit delta events as the sandbox produces output
             stdout_acc: list[str] = []

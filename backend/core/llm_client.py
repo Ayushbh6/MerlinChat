@@ -1,9 +1,10 @@
 import os
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, TypeVar
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -38,6 +39,23 @@ client = AsyncOpenAI(
     default_headers=default_headers or None,
 )
 
+StructuredResponseT = TypeVar("StructuredResponseT", bound=BaseModel)
+
+
+def _build_extra_body(
+    *,
+    plugins: list[dict[str, Any]] | None = None,
+    extra_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "provider": {"require_parameters": True},
+    }
+    if plugins:
+        body["plugins"] = plugins
+    if extra_body:
+        body.update(extra_body)
+    return body
+
 
 async def create_structured_completion(
     *,
@@ -47,19 +65,27 @@ async def create_structured_completion(
     plugins: list[dict[str, Any]] | None = None,
     extra_body: dict[str, Any] | None = None,
 ):
-    body: dict[str, Any] = {
-        "provider": {"require_parameters": True},
-    }
-    if plugins:
-        body["plugins"] = plugins
-    if extra_body:
-        body.update(extra_body)
-
     return await client.chat.completions.create(
         model=model,
         messages=messages,
         response_format={"type": "json_schema", "json_schema": json_schema},
-        extra_body=body,
+        extra_body=_build_extra_body(plugins=plugins, extra_body=extra_body),
+    )
+
+
+def open_structured_completion_stream(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    response_format: type[StructuredResponseT],
+    plugins: list[dict[str, Any]] | None = None,
+    extra_body: dict[str, Any] | None = None,
+):
+    return client.beta.chat.completions.stream(
+        model=model,
+        messages=messages,
+        response_format=response_format,
+        extra_body=_build_extra_body(plugins=plugins, extra_body=extra_body),
     )
 
 
@@ -91,19 +117,11 @@ async def stream_text_completion(
     plugins: list[dict[str, Any]] | None = None,
     extra_body: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
-    body: dict[str, Any] = {
-        "provider": {"require_parameters": True},
-    }
-    if plugins:
-        body["plugins"] = plugins
-    if extra_body:
-        body.update(extra_body)
-
     stream = await client.chat.completions.create(
         model=model,
         messages=messages,
         stream=True,
-        extra_body=body,
+        extra_body=_build_extra_body(plugins=plugins, extra_body=extra_body),
     )
     async for chunk in stream:
         choices = getattr(chunk, "choices", None) or []
