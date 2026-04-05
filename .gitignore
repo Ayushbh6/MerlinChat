@@ -27,9 +27,13 @@ ENV/
 
 # Personal / Sensitive
 token.json
+token.json*
 credentials.json
 client_secret.json
 *.pem
 *.sqlite3
 storage/
 plans/
+WU_Data/
+MEMORY.md
+cli_tests/cal_test.py

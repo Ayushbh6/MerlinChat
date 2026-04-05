@@ -96,6 +96,274 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds)
 
 
+def coerce_datetime(value: str, tz_name: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    tz = ZoneInfo(tz_name)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
+
+
+def coerce_date(value: str) -> date:
+    return date.fromisoformat(value)
+
+
+def event_label(event: dict, tz_name: str) -> str:
+    tz = ZoneInfo(tz_name)
+    start = parse_event_dt(event.get("start", {}), tz)
+    end = parse_event_dt(event.get("end", {}), tz)
+    if event.get("start", {}).get("date"):
+        start_str = event["start"]["date"]
+        end_raw = event.get("end", {}).get("date", "")
+        end_str = ""
+        if end_raw:
+            end_str = f" -> {(date.fromisoformat(end_raw) - timedelta(days=1)).isoformat()}"
+        time_part = f"{start_str}{end_str} (all-day)"
+    else:
+        start_str = start.isoformat() if start else "?"
+        end_str = end.isoformat() if end else "?"
+        time_part = f"{start_str} -> {end_str}"
+    return (
+        f"{event.get('id', '(no id)')} | {time_part} | "
+        f"{event.get('summary', '(no summary)')} | {event.get('location', '')}"
+    )
+
+
+def print_event(event: dict, tz_name: str) -> None:
+    print(event_label(event, tz_name))
+    description = event.get("description")
+    if description:
+        print(f"  description: {description}")
+    extended = event.get("extendedProperties", {}).get("private", {})
+    if extended:
+        print(f"  tags: {extended}")
+    reminders = event.get("reminders", {})
+    if reminders.get("useDefault") is False:
+        print(f"  reminders: {reminders.get('overrides', [])}")
+
+
+def parse_private_tags(raw_tags: list[str] | None) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in raw_tags or []:
+        if "=" not in item:
+            raise ValueError(f"Invalid tag '{item}'. Expected KEY=VALUE.")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            raise ValueError(f"Invalid tag '{item}'. Key cannot be empty.")
+        parsed[key] = value
+    return parsed
+
+
+def build_reminders(reminder_minutes: list[int] | None) -> dict:
+    if not reminder_minutes:
+        return {"useDefault": True}
+    unique_minutes = sorted(set(reminder_minutes), reverse=True)
+    return {
+        "useDefault": False,
+        "overrides": [{"method": "popup", "minutes": minutes} for minutes in unique_minutes],
+    }
+
+
+def build_event_body(args: argparse.Namespace, require_time: bool) -> dict:
+    if args.all_day:
+        if not args.start:
+            raise ValueError("--start is required for all-day events.")
+        start_date = coerce_date(args.start)
+        end_date = coerce_date(args.end) if args.end else start_date + timedelta(days=1)
+        if end_date <= start_date:
+            end_date = start_date + timedelta(days=1)
+        start_payload = {"date": start_date.isoformat()}
+        end_payload = {"date": end_date.isoformat()}
+    else:
+        if require_time and (not args.start or not args.end):
+            raise ValueError("--start and --end are required for timed events.")
+        start_payload = None
+        end_payload = None
+        if args.start:
+            start_dt = coerce_datetime(args.start, args.timezone)
+            start_payload = {
+                "dateTime": start_dt.isoformat(),
+                "timeZone": args.timezone,
+            }
+        if args.end:
+            end_dt = coerce_datetime(args.end, args.timezone)
+            end_payload = {
+                "dateTime": end_dt.isoformat(),
+                "timeZone": args.timezone,
+            }
+        if require_time and start_payload and end_payload:
+            start_dt = coerce_datetime(args.start, args.timezone)
+            end_dt = coerce_datetime(args.end, args.timezone)
+            if end_dt <= start_dt:
+                raise ValueError("--end must be after --start.")
+
+    body: dict = {}
+    if args.summary is not None:
+        body["summary"] = args.summary
+    if args.description is not None:
+        body["description"] = args.description
+    if args.location is not None:
+        body["location"] = args.location
+    if start_payload is not None:
+        body["start"] = start_payload
+    if end_payload is not None:
+        body["end"] = end_payload
+
+    private_tags = parse_private_tags(args.tag)
+    if private_tags:
+        body["extendedProperties"] = {"private": private_tags}
+
+    if require_time or args.reminder:
+        body["reminders"] = build_reminders(args.reminder)
+
+    return body
+
+
+def fetch_event(calendar_id: str, event_id: str) -> dict:
+    service = get_calendar_service()
+    return service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+
+
+def find_duplicate_candidates(
+    events: list[dict],
+    args: argparse.Namespace,
+) -> list[dict]:
+    candidates = events
+    if args.summary:
+        summary_cmp = normalize_text(args.summary)
+        candidates = [
+            event for event in candidates
+            if normalize_text(event.get("summary")) == summary_cmp
+        ]
+
+    private_tags = parse_private_tags(args.tag)
+    if private_tags:
+        filtered: list[dict] = []
+        for event in candidates:
+            event_tags = event.get("extendedProperties", {}).get("private", {})
+            if all(event_tags.get(key) == value for key, value in private_tags.items()):
+                filtered.append(event)
+        candidates = filtered
+
+    if args.start and args.end:
+        tz = ZoneInfo(args.timezone)
+        if args.all_day:
+            start_date = coerce_date(args.start)
+            end_date = coerce_date(args.end) if args.end else start_date + timedelta(days=1)
+            candidates = [
+                event for event in candidates
+                if event.get("start", {}).get("date") == start_date.isoformat()
+                and event.get("end", {}).get("date") == end_date.isoformat()
+            ]
+        else:
+            start_dt = coerce_datetime(args.start, args.timezone)
+            end_dt = coerce_datetime(args.end, args.timezone)
+            candidates = [
+                event for event in candidates
+                if event_matches_slot(event, start_dt, end_dt, tz)
+            ]
+
+    return candidates
+
+
+def list_events(calendar_id: str, args: argparse.Namespace) -> int:
+    if not args.start or not args.end:
+        raise ValueError("--start and --end are required for --list-events.")
+    if args.all_day:
+        raise ValueError("--all-day is not supported with --list-events.")
+
+    time_min = coerce_datetime(args.start, args.timezone)
+    time_max = coerce_datetime(args.end, args.timezone)
+    if time_max <= time_min:
+        raise ValueError("--end must be after --start.")
+
+    events = fetch_events(calendar_id, time_min, time_max)
+    if args.query:
+        query_cmp = normalize_text(args.query)
+        events = [
+            event for event in events
+            if query_cmp in normalize_text(
+                f"{event.get('summary', '')} {event.get('description', '')} {event.get('location', '')}"
+            )
+        ]
+
+    print(f"\n=== Calendar Events ({len(events)}) ===")
+    for event in events:
+        print_event(event, args.timezone)
+    return 0
+
+
+def create_event(calendar_id: str, args: argparse.Namespace) -> int:
+    if not args.summary:
+        raise ValueError("--summary is required for --create-event.")
+    body = build_event_body(args, require_time=True)
+    service = get_calendar_service()
+    created = service.events().insert(calendarId=calendar_id, body=body).execute()
+    print("Created event:")
+    print_event(created, args.timezone)
+    return 0
+
+
+def update_event(calendar_id: str, args: argparse.Namespace) -> int:
+    if not args.event_id:
+        raise ValueError("--event-id is required for --update-event.")
+    body = build_event_body(args, require_time=False)
+    if not body:
+        raise ValueError("Provide at least one field to update.")
+    service = get_calendar_service()
+    updated = service.events().patch(
+        calendarId=calendar_id,
+        eventId=args.event_id,
+        body=body,
+    ).execute()
+    print("Updated event:")
+    print_event(updated, args.timezone)
+    return 0
+
+
+def delete_event(calendar_id: str, args: argparse.Namespace) -> int:
+    if not args.event_id:
+        raise ValueError("--event-id is required for --delete-event.")
+    existing = fetch_event(calendar_id, args.event_id)
+    service = get_calendar_service()
+    service.events().delete(calendarId=calendar_id, eventId=args.event_id).execute()
+    print("Deleted event:")
+    print_event(existing, args.timezone)
+    return 0
+
+
+def upsert_event(calendar_id: str, args: argparse.Namespace) -> int:
+    if not args.summary:
+        raise ValueError("--summary is required for --upsert-event.")
+    if not args.start or not args.end:
+        raise ValueError("--start and --end are required for --upsert-event.")
+    if args.all_day:
+        range_start = datetime.combine(coerce_date(args.start), time(0, 0), tzinfo=ZoneInfo(args.timezone))
+        range_end = datetime.combine(coerce_date(args.end), time(23, 59), tzinfo=ZoneInfo(args.timezone))
+    else:
+        start_dt = coerce_datetime(args.start, args.timezone)
+        end_dt = coerce_datetime(args.end, args.timezone)
+        range_start = start_dt - timedelta(days=1)
+        range_end = end_dt + timedelta(days=1)
+
+    existing = fetch_events(calendar_id, range_start, range_end)
+    matches = find_duplicate_candidates(existing, args)
+
+    if len(matches) > 1:
+        print("Multiple matching events found. Refusing to upsert.")
+        for event in matches:
+            print_event(event, args.timezone)
+        return 1
+
+    if len(matches) == 1:
+        args.event_id = matches[0]["id"]
+        return update_event(calendar_id, args)
+
+    return create_event(calendar_id, args)
+
+
 def normalize_text(text: str | None) -> str:
     return " ".join((text or "").lower().split())
 
@@ -921,11 +1189,35 @@ def verify_interdisciplinary_series_course(calendar_id: str, tz_name: str) -> in
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify Information Visualization events in Google Calendar."
+        description="Google Calendar helper for TU Wien semester scheduling."
     )
     parser.add_argument("--course", default="Information Visualization", help="Course name to match")
     parser.add_argument("--calendar-id", default="primary", help="Google Calendar ID")
     parser.add_argument("--timezone", default=DEFAULT_TIMEZONE, help="IANA timezone")
+    parser.add_argument("--start", help="ISO datetime or date, depending on command")
+    parser.add_argument("--end", help="ISO datetime or date, depending on command")
+    parser.add_argument("--summary", help="Event summary/title")
+    parser.add_argument("--description", help="Event description")
+    parser.add_argument("--location", help="Event location")
+    parser.add_argument("--event-id", help="Google Calendar event id")
+    parser.add_argument("--query", help="Free-text filter for list output")
+    parser.add_argument("--all-day", action="store_true", help="Treat start/end as all-day dates")
+    parser.add_argument(
+        "--reminder",
+        action="append",
+        type=int,
+        help="Popup reminder minutes before the event. Repeatable.",
+    )
+    parser.add_argument(
+        "--tag",
+        action="append",
+        help="Private extended property KEY=VALUE. Repeatable.",
+    )
+    parser.add_argument("--list-events", action="store_true", help="List events in a date range")
+    parser.add_argument("--create-event", action="store_true", help="Create a generic event")
+    parser.add_argument("--update-event", action="store_true", help="Patch an existing event")
+    parser.add_argument("--delete-event", action="store_true", help="Delete an event")
+    parser.add_argument("--upsert-event", action="store_true", help="Create or update a matching event")
     parser.add_argument("--repair", action="store_true", help="Apply targeted fixes for known hard issues")
     parser.add_argument("--verify-after-repair", action="store_true", help="Run verification again after repair")
     parser.add_argument("--add-dasm", action="store_true", help="Add Data Acquisition and Survey Methods appointments")
@@ -939,74 +1231,93 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.verify_ils:
-        raise SystemExit(
-            verify_interdisciplinary_series_course(
-                calendar_id=args.calendar_id,
-                tz_name=args.timezone,
-            )
-        )
+    try:
+        if args.list_events:
+            raise SystemExit(list_events(calendar_id=args.calendar_id, args=args))
 
-    if args.add_ils:
-        raise SystemExit(
-            add_interdisciplinary_series_course(
-                calendar_id=args.calendar_id,
-                tz_name=args.timezone,
-            )
-        )
+        if args.create_event:
+            raise SystemExit(create_event(calendar_id=args.calendar_id, args=args))
 
-    if args.verify_dic:
-        raise SystemExit(
-            verify_data_intensive_course(
-                calendar_id=args.calendar_id,
-                tz_name=args.timezone,
-            )
-        )
+        if args.update_event:
+            raise SystemExit(update_event(calendar_id=args.calendar_id, args=args))
 
-    if args.add_dic:
-        raise SystemExit(
-            add_data_intensive_course(
-                calendar_id=args.calendar_id,
-                tz_name=args.timezone,
-            )
-        )
+        if args.delete_event:
+            raise SystemExit(delete_event(calendar_id=args.calendar_id, args=args))
 
-    if args.verify_dasm:
-        raise SystemExit(
-            verify_data_acquisition_course(
-                calendar_id=args.calendar_id,
-                tz_name=args.timezone,
-            )
-        )
+        if args.upsert_event:
+            raise SystemExit(upsert_event(calendar_id=args.calendar_id, args=args))
 
-    if args.add_dasm:
-        raise SystemExit(
-            add_data_acquisition_course(
-                calendar_id=args.calendar_id,
-                tz_name=args.timezone,
-            )
-        )
-
-    if args.repair:
-        repair_schedule(
-            course_name=args.course,
-            calendar_id=args.calendar_id,
-            tz_name=args.timezone,
-        )
-        if args.verify_after_repair:
+        if args.verify_ils:
             raise SystemExit(
-                verify_schedule(
-                    course_name=args.course,
+                verify_interdisciplinary_series_course(
                     calendar_id=args.calendar_id,
                     tz_name=args.timezone,
                 )
             )
-        raise SystemExit(0)
 
-    raise SystemExit(
-        verify_schedule(
-            course_name=args.course,
-            calendar_id=args.calendar_id,
-            tz_name=args.timezone,
+        if args.add_ils:
+            raise SystemExit(
+                add_interdisciplinary_series_course(
+                    calendar_id=args.calendar_id,
+                    tz_name=args.timezone,
+                )
+            )
+
+        if args.verify_dic:
+            raise SystemExit(
+                verify_data_intensive_course(
+                    calendar_id=args.calendar_id,
+                    tz_name=args.timezone,
+                )
+            )
+
+        if args.add_dic:
+            raise SystemExit(
+                add_data_intensive_course(
+                    calendar_id=args.calendar_id,
+                    tz_name=args.timezone,
+                )
+            )
+
+        if args.verify_dasm:
+            raise SystemExit(
+                verify_data_acquisition_course(
+                    calendar_id=args.calendar_id,
+                    tz_name=args.timezone,
+                )
+            )
+
+        if args.add_dasm:
+            raise SystemExit(
+                add_data_acquisition_course(
+                    calendar_id=args.calendar_id,
+                    tz_name=args.timezone,
+                )
+            )
+
+        if args.repair:
+            repair_schedule(
+                course_name=args.course,
+                calendar_id=args.calendar_id,
+                tz_name=args.timezone,
+            )
+            if args.verify_after_repair:
+                raise SystemExit(
+                    verify_schedule(
+                        course_name=args.course,
+                        calendar_id=args.calendar_id,
+                        tz_name=args.timezone,
+                    )
+                )
+            raise SystemExit(0)
+
+        raise SystemExit(
+            verify_schedule(
+                course_name=args.course,
+                calendar_id=args.calendar_id,
+                tz_name=args.timezone,
+            )
         )
-    )
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        raise SystemExit(2)
